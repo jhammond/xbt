@@ -64,23 +64,19 @@ static bool x86_64_is_module_addr(ulong vaddr)
 /* Check whether an RIP is in the FIXMAP vsyscall page. */
 static bool is_vsyscall_addr(ulong rip)
 {
-	ulong page;
+	ulong page = page = machdep->machspec->vsyscall_page;
 
-	if ((page = machdep->machspec->vsyscall_page))
-		if ((rip >= page) && (rip < (page+PAGESIZE())))
-			return true;
-
-	return false;
+	return page != 0 && rip >= page && rip < page + PAGESIZE();
 }
 
 struct framesize_cache {
-        ulong textaddr;
-        int framesize;
+	ulong textaddr;
+	int framesize;
 	int exception;
 };
 
-static struct framesize_cache *x86_64_framesize_cache = NULL;
-static int framesize_cache_entries = 0;
+static struct framesize_cache *x86_64_framesize_cache;
+static int framesize_cache_entries;
 
 #define FRAMESIZE_QUERY  (1)
 #define FRAMESIZE_ENTER  (2)
@@ -90,14 +86,15 @@ static int framesize_cache_entries = 0;
 
 static int x86_64_framesize_cache_resize(void)
 {
-	int i;
 	struct framesize_cache *new_fc, *fc;
+	int i;
 
-	if ((new_fc = realloc(x86_64_framesize_cache, 
-			      (framesize_cache_entries + FRAMESIZE_CACHE_INCR) * 
-			      sizeof(struct framesize_cache))) == NULL) {
+	new_fc = realloc(x86_64_framesize_cache,
+			 (framesize_cache_entries + FRAMESIZE_CACHE_INCR) * 
+			 sizeof(struct framesize_cache));
+	if (new_fc == NULL) {
 		error(INFO, "cannot realloc x86_64_framesize_cache space!\n");
-		return FALSE;
+		return false;
 	}
 
 	fc = new_fc + framesize_cache_entries;
@@ -107,12 +104,12 @@ static int x86_64_framesize_cache_resize(void)
 		fc->textaddr = 0;
 		fc->framesize = 0;
 		fc->exception = 0;
-	} 	
+	}	
 
 	x86_64_framesize_cache = new_fc;
 	framesize_cache_entries += FRAMESIZE_CACHE_INCR;
 
-	return TRUE;
+	return true;
 }
 
 static int
@@ -130,8 +127,7 @@ x86_64_framesize_cache_func(int cmd, ulong textaddr, int *framesize, int excepti
 			    "cannot calloc x86_64_framesize_cache space!\n");
 	}
 
-	switch (cmd) 
-	{
+	switch (cmd) {
 	case FRAMESIZE_QUERY:
 		fc = &x86_64_framesize_cache[0];
 		for (i = 0; i < framesize_cache_entries; i++, fc++) {
@@ -176,7 +172,7 @@ retry:
 		fc = &x86_64_framesize_cache[0];
 		for (i = 0; i < framesize_cache_entries; i++, fc++) {
 			if (fc->textaddr == 0) {
-				if (i < (framesize_cache_entries-1)) {
+				if (i < framesize_cache_entries - 1) {
 					fprintf(fp, "[%d-%d]: (unused)\n",
 						i, framesize_cache_entries-1);
 				}
@@ -194,8 +190,7 @@ retry:
 	return TRUE;
 }
 
-static struct syment *
-x86_64_function_called_by(ulong rip)
+static struct syment *x86_64_function_called_by(ulong rip)
 {
 	struct syment *sp;
 	char buf[BUFSIZE], *p1;
@@ -205,19 +200,18 @@ x86_64_function_called_by(ulong rip)
 	value = 0;
 	sp = NULL;
 
-        if (!readmem(rip, KVADDR, &byte, sizeof(unsigned char), "call byte",
-            QUIET|RETURN_ON_ERROR)) 
+	if (!readmem(rip, KVADDR, &byte, sizeof(byte), "call byte", QUIET|RETURN_ON_ERROR))
 		return sp;
 
-        if (byte != 0xe8) 
+	if (byte != 0xe8)
 		return sp;
 
-        sprintf(buf, "x/i 0x%lx", rip);
+	sprintf(buf, "x/i 0x%lx", rip);
 
-        open_tmpfile2();
+	open_tmpfile2();
 	if (gdb_pass_through(buf, pc->tmpfile2, GNU_RETURN_ON_ERROR)) {
-	        rewind(pc->tmpfile2);
-	        while (fgets(buf, BUFSIZE, pc->tmpfile2)) {
+		rewind(pc->tmpfile2);
+		while (fgets(buf, BUFSIZE, pc->tmpfile2)) {
 			if ((p1 = strstr(buf, "callq")) &&
 			    whitespace(*(p1-1))) { 
 				if (extract_hex(p1, &value, NULLCHAR, TRUE)) 
@@ -225,28 +219,24 @@ x86_64_function_called_by(ulong rip)
 			}
 		}
 	}
-        close_tmpfile2();
+	close_tmpfile2();
 
-	if (value)
+	if (value != 0)
 		sp = value_search(value, &offset);
 
 	/*
 	 *  Functions that jmp to schedule() or schedule_timeout().
 	 */
-	if (sp) {
-	    	if ((STREQ(sp->name, "schedule_timeout_interruptible") ||
-	             STREQ(sp->name, "schedule_timeout_uninterruptible")))
+	if (sp != NULL) {
+		if (STREQ(sp->name, "schedule_timeout_interruptible") ||
+		    STREQ(sp->name, "schedule_timeout_uninterruptible"))
 			sp = symbol_search("schedule_timeout");
-
-		if (STREQ(sp->name, "__cond_resched"))
+		else if (STREQ(sp->name, "__cond_resched"))
 			sp = symbol_search("schedule");
 	}
 
 	return sp;
 }
-
-
-
 
 /*
  *  The __schedule() framesize should only have to be calculated
@@ -254,8 +244,7 @@ x86_64_function_called_by(ulong rip)
  *  framesize applies to this task, and if it doesn't, recalculate.
  *  Update the bt->instptr here, and return the new stack pointer.
  */
-static ulong 
-__schedule_frame_adjust(ulong rsp_in, struct bt_info *bt)
+static ulong __schedule_frame_adjust(ulong rsp_in, struct bt_info *bt)
 {
 	int i, found;
 	ulong rsp, *up;
@@ -263,35 +252,36 @@ __schedule_frame_adjust(ulong rsp_in, struct bt_info *bt)
 	int framesize;
 
 	if (x86_64_framesize_cache_func(FRAMESIZE_QUERY, 
-	    machdep->machspec->thread_return, &framesize, 0)) {
+					machdep->machspec->thread_return,
+					&framesize, 0)) {
 		rsp = rsp_in + framesize;
-		i = (rsp - bt->stackbase)/sizeof(ulong);
-		up = (ulong *)(&bt->stackbuf[i*sizeof(ulong)]);
+		i = (rsp - bt->stackbase) / sizeof(ulong);
+		up = (ulong *)(&bt->stackbuf[i * sizeof(ulong)]);
 
 		if (is_kernel_text_offset(*up) &&
-		    (sp = x86_64_function_called_by((*up)-5)) &&
+		    (sp = x86_64_function_called_by((*up) - 5)) &&
 		    STREQ(sp->name, "__schedule")) {
 			bt->instptr = *up;
-			return (rsp);
+			return rsp;
 		}
 	}
 
 	rsp = rsp_in;
 
-	for (found = FALSE, i = (rsp - bt->stackbase)/sizeof(ulong);
+	for (found = FALSE, i = (rsp - bt->stackbase) / sizeof(ulong);
 	     rsp < bt->stacktop; i++, rsp += sizeof(ulong)) {
-		up = (ulong *)(&bt->stackbuf[i*sizeof(ulong)]);
+		up = (ulong *)(&bt->stackbuf[i * sizeof(ulong)]);
 
 		if (!is_kernel_text_offset(*up))
 			continue;
 
-		if ((sp = x86_64_function_called_by((*up)-5)) &&
-		    (STREQ(sp->name, "__schedule"))) {
+		if ((sp = x86_64_function_called_by((*up) - 5)) &&
+		    STREQ(sp->name, "__schedule")) {
 			framesize = (int)(rsp - rsp_in);
 			bt->instptr = *up;
 			x86_64_framesize_cache_func(FRAMESIZE_ENTER, 
-			    machdep->machspec->thread_return,
-			    &framesize, 0);
+						    machdep->machspec->thread_return,
+						    &framesize, 0);
 			bt->instptr = *up;
 			found = TRUE;
 			break;
@@ -301,7 +291,7 @@ __schedule_frame_adjust(ulong rsp_in, struct bt_info *bt)
 	if (CRASHDEBUG(1) && !found)
 		error(INFO, "cannot determine __schedule() caller\n");
 
-	return (found ? rsp : rsp_in);
+	return found ? rsp : rsp_in;
 }
 
 static void
@@ -310,13 +300,12 @@ x86_64_do_bt_reference_check(struct bt_info *bt, ulong text, char *name)
 	ulong offset;
 	struct syment *sp = NULL;
 
-	if (!name)
+	if (name == NULL)
 		sp = value_search(text, &offset); 
-	else if (!text)
+	else if (text == 0)
 		sp = symbol_search(name);
 
-        switch (bt->ref->cmdflags & (BT_REF_SYMBOL|BT_REF_HEXVAL))
-        {
+        switch (bt->ref->cmdflags & (BT_REF_SYMBOL|BT_REF_HEXVAL)) {
         case BT_REF_SYMBOL:
                 if (name) {
 			if (STREQ(name, bt->ref->str))
@@ -361,80 +350,77 @@ text_lock_function(char *name, struct bt_info *bt, ulong locktext)
 	else
         	sprintf(buf, "x/1i 0x%lx", locktext);
 
-        if (!gdb_pass_through(buf, pc->tmpfile2, GNU_RETURN_ON_ERROR)) {
-                close_tmpfile2();
-                bt->flags |= BT_FRAMESIZE_DISABLE;
-                return 0;
-        }
+	if (!gdb_pass_through(buf, pc->tmpfile2, GNU_RETURN_ON_ERROR)) {
+		close_tmpfile2();
+		bt->flags |= BT_FRAMESIZE_DISABLE;
+		return 0;
+	}
 
-        rewind(pc->tmpfile2);
-        while (fgets(buf, BUFSIZE, pc->tmpfile2)) {
-                c = parse_line(buf, arglist);
+	rewind(pc->tmpfile2);
+	while (fgets(buf, BUFSIZE, pc->tmpfile2)) {
+		c = parse_line(buf, arglist);
 
-                if (instr == -1) {
-                        /*
-                         *  Check whether <function+offset> are
-                         *  in the output string.
+		if (instr == -1) {
+			/*
+                         *  Check whether <function+offset> are in the
+                         *  output string.
                          */
-                        if (LASTCHAR(arglist[0]) == ':') {
-                                instr = 1;
-                                arg = 2;
-                        } else {
-                                instr = 2;
-                                arg = 3;
-                        }
-                }
+			if (LASTCHAR(arglist[0]) == ':') {
+				instr = 1;
+				arg = 2;
+			} else {
+				instr = 2;
+				arg = 3;
+			}
+		}
 
-                if (c < (arg+1))
-                        break;
+		if (c < arg + 1)
+			break;
 
-		if (STREQ(arglist[instr], "jmpq") || STREQ(arglist[instr], "jmp")) {
-                        p1 = arglist[arg];
-                        reterror = 0;
-                        locking_func = htol(p1, RETURN_ON_ERROR, &reterror);
-                        if (reterror)
+		if (STREQ(arglist[instr], "jmpq") ||
+		    STREQ(arglist[instr], "jmp")) {
+			p1 = arglist[arg];
+			reterror = 0;
+			locking_func = htol(p1, RETURN_ON_ERROR, &reterror);
+			if (reterror)
 				locking_func = 0;
 			break;
-                }
+		}
 	}
 	close_tmpfile2();
 
-	if (!locking_func)
-                bt->flags |= BT_FRAMESIZE_DISABLE;
+	if (locking_func != 0)
+		bt->flags |= BT_FRAMESIZE_DISABLE;
 
 	return locking_func;
-
 }
 
-ulong
-x86_64_get_framepointer(struct bt_info *bt, ulong rsp)
+ulong x86_64_get_framepointer(struct bt_info *bt, ulong rsp)
 {
-	ulong stackptr, framepointer, retaddr;
+	ulong sp = rsp - sizeof(rsp);
+	ulong fp = 0;
+	ulong ra;
 
-	framepointer = 0;
-	stackptr = rsp - sizeof(ulong);
-
-	if (!INSTACK(stackptr, bt))
+	if (!INSTACK(sp, bt))
 		return 0;
 
-	if (!readmem(stackptr, KVADDR, &framepointer,
-	    sizeof(ulong), "framepointer", RETURN_ON_ERROR|QUIET)) 
+	if (!readmem(sp, KVADDR, &fp, sizeof(fp), "FP", RETURN_ON_ERROR|QUIET))
 		return 0;
 
-	if (!INSTACK(framepointer, bt)) 
+	if (!INSTACK(fp, bt))
 		return 0;
 
-	if (framepointer <= (rsp+sizeof(ulong)))
+	if (fp <= rsp + sizeof(rsp))
 		return 0;
 
-	if (!readmem(framepointer + sizeof(ulong), KVADDR, &retaddr,
-	    sizeof(ulong), "return address", RETURN_ON_ERROR|QUIET)) 
+	if (!readmem(fp + sizeof(fp), KVADDR, &ra, sizeof(ra), "RA",
+		     RETURN_ON_ERROR|QUIET)) 
 		return 0;
 
-	if (!is_kernel_text(retaddr))
+	if (!is_kernel_text(ra))
 		return 0;
 
-	return framepointer;
+	return fp;
 }
 
 #define BT_FRAMESIZE_IGNORE_MASK \
@@ -462,25 +448,26 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 			return 0;
 	}
 
-        if (!(sp = value_search(textaddr, &offset))) {
+	if (!(sp = value_search(textaddr, &offset))) {
 		if (!(bt->flags & BT_FRAMESIZE_DEBUG))
 			bt->flags |= BT_FRAMESIZE_DISABLE;
-                return 0;
+		return 0;
 	}
 
 	exception = bt->eframe_ip == textaddr ? TRUE : FALSE;
 
 	if (!(bt->flags & BT_FRAMESIZE_DEBUG) &&
 	    x86_64_framesize_cache_func(FRAMESIZE_QUERY, textaddr, &framesize,
-		exception)) {
+					exception)) {
 		if (framesize == -1)
 			bt->flags |= BT_FRAMESIZE_DISABLE;
-		return framesize; 
+
+		return framesize;
 	}
 
 	/*
-	 *  Bait and switch an incoming .text.lock address
-	 *  with the containing function's address.
+	 *  Bait and switch an incoming .text.lock address with the
+	 *  containing function's address.
 	 */
 	if (STRNEQ(sp->name, ".text.lock.") &&
 	    (locking_func = text_lock_function(sp->name, bt, textaddr))) {
@@ -490,14 +477,16 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 		}
 		textaddr_save = textaddr;
 		textaddr = locking_func;
-	} else
+	} else {
 		textaddr_save = 0;
+	}
 
 	/*
-	 *  As of 2.6.29, "irq_entries_start" replaced the range of IRQ
-	 *  entry points named IRQ0x00_interrupt through IRQ0x##_interrupt.
-	 *  Each IRQ entry point in the list of non-symbolically-named 
-	 *  entry stubs consists of a single pushq and a jmp.
+	 *  As of 2.6.29, "irq_entries_start" replaced the range of
+	 *  IRQ entry points named IRQ0x00_interrupt through
+	 *  IRQ0x##_interrupt.  Each IRQ entry point in the list of
+	 *  non-symbolically-named entry stubs consists of a single
+	 *  pushq and a jmp.
 	 */
 	if (STREQ(sp->name, "irq_entries_start")) {
 #define PUSH_IMM8 0x6a
@@ -508,22 +497,24 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 			framesize = 0;
 		else 
 			framesize = 8;
-		return (x86_64_framesize_cache_func(FRAMESIZE_ENTER, textaddr, 
-                	&framesize, exception));
+
+		return x86_64_framesize_cache_func(FRAMESIZE_ENTER, textaddr, 
+						   &framesize, exception);
 	}
 
-	if ((machdep->flags & FRAMEPOINTER) && 
+	if ((machdep->flags & FRAMEPOINTER) &&
 	    rsp && !exception && !textaddr_save) {
 		framepointer = x86_64_get_framepointer(bt, rsp);
 		if (CRASHDEBUG(3)) {
 			if (framepointer)
-				fprintf(fp, 
-				    " rsp: %lx framepointer: %lx -> %ld\n", 
+				fprintf(fp,
+					" rsp: %lx framepointer: %lx -> %ld\n", 
 					rsp, framepointer, framepointer - rsp);
 			else
-				fprintf(fp, 
-				    " rsp: %lx framepointer: (unknown)\n", rsp);
+				fprintf(fp,
+					" rsp: %lx framepointer: (unknown)\n", rsp);
 		}
+
 		if (framepointer) {
 			framesize = framepointer - rsp;
 			return (x86_64_framesize_cache_func(FRAMESIZE_ENTER, 
@@ -557,8 +548,8 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 
 		if (instr == -1) {
 			/*
-			 *  Check whether <function+offset> are 
-			 *  in the output string.
+			 *  Check whether <function+offset> are in the
+			 *  output string.
 			 */
 			if (LASTCHAR(arglist[0]) == ':') {
 				instr = 1;
@@ -569,15 +560,15 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 			}
 		}
 
-		if (c < (instr+1))
+		if (c < instr + 1)
 			continue;
-		else if (c >= (arg+1))
+		else if (c >= arg + 1)
 			arg_exists = TRUE;
 		else
 			arg_exists = FALSE;
 
 		reterror = 0;
-		current =  htol(strip_ending_char(arglist[0], ':'), 
+		current = htol(strip_ending_char(arglist[0], ':'),
 			RETURN_ON_ERROR, &reterror);
 		if (reterror)
 			continue;
@@ -706,35 +697,6 @@ static void x86_64_framesize_debug(struct bt_info *bt)
 	}
 }
 
-static void
-x86_64_display_full_frame(struct bt_info *bt, ulong rsp, FILE *ofp)
-{
-	int i, u_idx;
-	ulong *up;
-	ulong words, addr;
-	char buf[BUFSIZE];
-
-	if (rsp < bt->frameptr)
-		return;
-
-	if (!INSTACK(rsp, bt) || !INSTACK(bt->frameptr, bt))
-		return;
-
-        words = (rsp - bt->frameptr) / sizeof(ulong) + 1;
-
-	addr = bt->frameptr;
-	u_idx = (bt->frameptr - bt->stackbase)/sizeof(ulong);
-	for (i = 0; i < words; i++, u_idx++) {
-		if (!(i & 1)) 
-			fprintf(ofp, "%s    %lx: ", i ? "\n" : "", addr);
-		
-		up = (ulong *)(&bt->stackbuf[u_idx*sizeof(ulong)]);
-		fprintf(ofp, "%s ", format_stack_entry(bt, buf, *up, 0));
-		addr += sizeof(ulong);
-	}
-	fprintf(ofp, "\n");
-}
-
 static bool is_direct_call_target(struct bt_info *bt)
 {
 	/*
@@ -812,181 +774,13 @@ static const char *exception_functions[] = {
 	NULL,
 };
 
-#define BACKTRACE_COMPLETE                   (1)
-#define BACKTRACE_ENTRY_IGNORED              (2)
-#define BACKTRACE_ENTRY_DISPLAYED            (3)
-#define BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED (4)
-
-static int
-x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level, 
-	int stkindex, ulong text)
-{
-	ulong rsp, offset, locking_func;
-	struct syment *sp, *spl;
-	char *name, *name_plus_offset;
-	int i, result; 
-	long eframe_check;
-	char buf1[BUFSIZE];
-	char buf2[BUFSIZE];
-	struct load_module *lm;
-
-	eframe_check = -1;
-	if (!(bt->flags & BT_SAVE_EFRAME_IP))
-		bt->eframe_ip = 0;
-	offset = 0;
-	sp = value_search(text, &offset);
-	if (!sp)
-		return BACKTRACE_ENTRY_IGNORED;
-
-	name = sp->name;
-
-	if (offset && (bt->flags & BT_SYMBOL_OFFSET))
-		name_plus_offset = value_to_symstr(text, buf2, bt->radix);
-	else
-		name_plus_offset = NULL;
-
-	if (bt->flags & BT_TEXT_SYMBOLS) {
-		if (bt->flags & BT_EXCEPTION_FRAME)
-			rsp = bt->stkptr;
-		else
-			rsp = bt->stackbase + (stkindex * sizeof(long));
-                fprintf(ofp, "  [%s] %s at %lx",
-                	mkstring(buf1, VADDR_PRLEN, RJUST|LONG_HEX, MKSTR(rsp)),
-			name_plus_offset ? name_plus_offset : name, text);
-		if (module_symbol(text, NULL, &lm, NULL, 0))
-			fprintf(ofp, " [%s]", lm->mod_name);
-		fprintf(ofp, "\n");
-		if (BT_REFERENCE_CHECK(bt))
-			x86_64_do_bt_reference_check(bt, text, name);
-		return BACKTRACE_ENTRY_DISPLAYED;
-	}
-
-	if (!offset && !(bt->flags & BT_EXCEPTION_FRAME) &&
-	    !(bt->flags & BT_START)) { 
-		if (STREQ(name, "child_rip")) {
-			if (symbol_exists("kernel_thread"))
-				name = "kernel_thread";
-			else if (symbol_exists("arch_kernel_thread"))
-				name = "arch_kernel_thread";
-		}
-		else if (!(bt->flags & BT_SCHEDULE)) {
-			if (STREQ(name, "error_exit")) 
-				eframe_check = 8;
-			else {
-				if (CRASHDEBUG(2))
-					fprintf(ofp, 
-		              "< ignoring text symbol with no offset: %s() >\n",
-						sp->name);
-				return BACKTRACE_ENTRY_IGNORED;
-			}
-		}
-	}
-
-	if ((THIS_KERNEL_VERSION >= LINUX(2,6,29)) && 
-	    (eframe_check == -1) && offset && 
-	    !(bt->flags & (BT_EXCEPTION_FRAME|BT_START|BT_SCHEDULE))) { 
-		for (i = 0; exception_functions[i]; i++) {
-			if (STREQ(name, exception_functions[i])) {
-				eframe_check = 8;
-				break;
-			}
-		}
-	}
-
-	if (bt->flags & BT_SCHEDULE)
-		name = "schedule";
-
-        if (STREQ(name, "child_rip")) {
-                if (symbol_exists("kernel_thread"))
-                        name = "kernel_thread";
-                else if (symbol_exists("arch_kernel_thread"))
-                        name = "arch_kernel_thread";
-		result = BACKTRACE_COMPLETE;
-        } else if (STREQ(name, "cpu_idle") || 
-	    STREQ(name, "system_call_fastpath"))
-		result = BACKTRACE_COMPLETE;
-	else
-		result = BACKTRACE_ENTRY_DISPLAYED;
-
-	if (bt->flags & BT_EXCEPTION_FRAME)
-		rsp = bt->stkptr;
-	else if (bt->flags & BT_START)
-		rsp = bt->stkptr;
-	else
-		rsp = bt->stackbase + (stkindex * sizeof(long));
-
-	if ((bt->flags & BT_FULL)) {
-		if (bt->frameptr) 
-			x86_64_display_full_frame(bt, rsp, ofp);
-		bt->frameptr = rsp + sizeof(ulong);
-	}
-
-       	fprintf(ofp, "%s#%d [%8lx] %s at %lx", level < 10 ? " " : "", level,
-		rsp, name_plus_offset ? name_plus_offset : name, text);
-
-	if (STREQ(name, "tracesys"))
-		fprintf(ofp, " (via system_call)");
-	else if (STRNEQ(name, ".text.lock.")) {
-		if ((locking_func = text_lock_function(name, bt, text)) &&
-		    (spl = value_search(locking_func, &offset)))
-			fprintf(ofp, " (via %s)", spl->name);
-	}
-	if (module_symbol(text, NULL, &lm, NULL, 0))
-		fprintf(ofp, " [%s]", lm->mod_name);
-
-	if (bt->flags & BT_FRAMESIZE_DISABLE)
-		fprintf(ofp, " *");
-
-	fprintf(ofp, "\n");
-
-        if (bt->flags & BT_LINE_NUMBERS) {
-                get_line_number(text, buf1, FALSE);
-                if (strlen(buf1))
-                        fprintf(ofp, "    %s\n", buf1);
-	}
-
-	if (eframe_check >= 0) {
-		if (x86_64_exception_frame(EFRAME_PRINT|EFRAME_VERIFY, 
-		    bt->stackbase + (stkindex*sizeof(long)) + eframe_check,
-		    NULL, bt, ofp))
-			result = BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED;
-	}
-
-	if (BT_REFERENCE_CHECK(bt))
-		x86_64_do_bt_reference_check(bt, text, name);
-
-	bt->call_target = name;
-
-	if (is_direct_call_target(bt)) {
-		if (CRASHDEBUG(2))
-			fprintf(ofp, "< enable BT_CHECK_CALLER for %s >\n", 
-				bt->call_target);
-		bt->flags |= BT_CHECK_CALLER;
-	} else {
-		if (CRASHDEBUG(2) && (bt->flags & BT_CHECK_CALLER))
-			fprintf(ofp, "< disable BT_CHECK_CALLER for %s >\n", 
-				bt->call_target);
-		if (bt->flags & BT_CHECK_CALLER) {
-			if (CRASHDEBUG(2))
-			    	fprintf(ofp, "< set BT_NO_CHECK_CALLER >\n");
-			bt->flags |= BT_NO_CHECK_CALLER;
-		}
-		bt->flags &= ~(ulonglong)BT_CHECK_CALLER;
-	}
-
-	return result;
-}
-
-
 static bool x86_64_print_eframe_location(ulong eframe, int level, FILE *ofp)
 {
 	return false;
 }
 
-
-
 /*
- *  Calculate and verify the IRQ exception frame location from the 
+ *  Calculate and verify the IRQ exception frame location from the
  *  stack reference at the top of the IRQ stack, possibly adjusting
  *  the ms->irq_eframe_link value.
  */
@@ -1077,9 +871,8 @@ static ulong x86_64_in_irqstack(struct bt_info *bt)
  */
 #define RAZ_MASK 0xffffffffffc08028    /* return-as-zero bits */
 
-static int 
-x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
-	long rip, long rsp, long rflags)
+static int x86_64_eframe_verify(struct bt_info *bt, long kvaddr, long cs, long ss,
+				long rip, long rsp, long rflags)
 {
 	int estack;
 
@@ -1423,8 +1216,208 @@ long x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 	return 0;
 }
 
+
 static void
-x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
+x86_64_display_full_frame(struct bt_info *bt, ulong rsp, FILE *ofp)
+{
+	int i, u_idx;
+	ulong *up;
+	ulong words, addr;
+	char buf[BUFSIZE];
+
+	if (rsp < bt->frameptr)
+		return;
+
+	if (!INSTACK(rsp, bt) || !INSTACK(bt->frameptr, bt))
+		return;
+
+        words = (rsp - bt->frameptr) / sizeof(ulong) + 1;
+
+	addr = bt->frameptr;
+	u_idx = (bt->frameptr - bt->stackbase) / sizeof(ulong);
+	for (i = 0; i < words; i++, u_idx++) {
+		if (!(i & 1)) 
+			fprintf(ofp, "%s    %lx: ", i ? "\n" : "", addr);
+		
+		up = (ulong *)(&bt->stackbuf[u_idx * sizeof(ulong)]);
+		fprintf(ofp, "%s ", format_stack_entry(bt, buf, *up, 0));
+		addr += sizeof(ulong);
+	}
+	fprintf(ofp, "\n");
+}
+
+#define BACKTRACE_COMPLETE                   (1)
+#define BACKTRACE_ENTRY_IGNORED              (2)
+#define BACKTRACE_ENTRY_DISPLAYED            (3)
+#define BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED (4)
+
+static int
+x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level, 
+	int stkindex, ulong text)
+{
+	ulong rsp, offset, locking_func;
+	struct syment *sp, *spl;
+	char *name, *name_plus_offset;
+	int i, result; 
+	long eframe_check;
+	char buf1[BUFSIZE];
+	char buf2[BUFSIZE];
+	struct load_module *lm;
+
+	eframe_check = -1;
+	if (!(bt->flags & BT_SAVE_EFRAME_IP))
+		bt->eframe_ip = 0;
+	offset = 0;
+	sp = value_search(text, &offset);
+	if (!sp)
+		return BACKTRACE_ENTRY_IGNORED;
+
+	name = sp->name;
+
+	if (offset && (bt->flags & BT_SYMBOL_OFFSET))
+		name_plus_offset = value_to_symstr(text, buf2, bt->radix);
+	else
+		name_plus_offset = NULL;
+
+	if (bt->flags & BT_TEXT_SYMBOLS) {
+		if (bt->flags & BT_EXCEPTION_FRAME)
+			rsp = bt->stkptr;
+		else
+			rsp = bt->stackbase + (stkindex * sizeof(long));
+                fprintf(ofp, "  [%s] %s at %lx",
+                	mkstring(buf1, VADDR_PRLEN, RJUST|LONG_HEX, MKSTR(rsp)),
+			name_plus_offset ? name_plus_offset : name, text);
+		if (module_symbol(text, NULL, &lm, NULL, 0))
+			fprintf(ofp, " [%s]", lm->mod_name);
+		fprintf(ofp, "\n");
+		if (BT_REFERENCE_CHECK(bt))
+			x86_64_do_bt_reference_check(bt, text, name);
+		return BACKTRACE_ENTRY_DISPLAYED;
+	}
+
+	if (!offset && !(bt->flags & BT_EXCEPTION_FRAME) &&
+	    !(bt->flags & BT_START)) { 
+		if (STREQ(name, "child_rip")) {
+			if (symbol_exists("kernel_thread"))
+				name = "kernel_thread";
+			else if (symbol_exists("arch_kernel_thread"))
+				name = "arch_kernel_thread";
+		}
+		else if (!(bt->flags & BT_SCHEDULE)) {
+			if (STREQ(name, "error_exit")) 
+				eframe_check = 8;
+			else {
+				if (CRASHDEBUG(2))
+					fprintf(ofp, 
+		              "< ignoring text symbol with no offset: %s() >\n",
+						sp->name);
+				return BACKTRACE_ENTRY_IGNORED;
+			}
+		}
+	}
+
+	if ((THIS_KERNEL_VERSION >= LINUX(2,6,29)) && 
+	    (eframe_check == -1) && offset && 
+	    !(bt->flags & (BT_EXCEPTION_FRAME|BT_START|BT_SCHEDULE))) { 
+		for (i = 0; exception_functions[i]; i++) {
+			if (STREQ(name, exception_functions[i])) {
+				eframe_check = 8;
+				break;
+			}
+		}
+	}
+
+	if (bt->flags & BT_SCHEDULE)
+		name = "schedule";
+
+	if (STREQ(name, "child_rip")) {
+		if (symbol_exists("kernel_thread"))
+			name = "kernel_thread";
+                else if (symbol_exists("arch_kernel_thread"))
+			name = "arch_kernel_thread";
+		result = BACKTRACE_COMPLETE;
+        } else if (STREQ(name, "cpu_idle") || 
+	    STREQ(name, "system_call_fastpath"))
+		result = BACKTRACE_COMPLETE;
+	else {
+		result = BACKTRACE_ENTRY_DISPLAYED;
+	}
+
+	if (bt->flags & BT_EXCEPTION_FRAME)
+		rsp = bt->stkptr;
+	else if (bt->flags & BT_START)
+		rsp = bt->stkptr;
+	else
+		rsp = bt->stackbase + (stkindex * sizeof(long));
+
+	if (bt->flags & BT_FULL) {
+		if (bt->frameptr)
+			x86_64_display_full_frame(bt, rsp, ofp);
+		bt->frameptr = rsp + sizeof(ulong);
+	}
+
+	fprintf(ofp, "%s#%d [%8lx] %s at %lx", level < 10 ? " " : "", level,
+		rsp, name_plus_offset ? name_plus_offset : name, text);
+
+	if (STREQ(name, "tracesys")) {
+		fprintf(ofp, " (via system_call)");
+	} else if (STRNEQ(name, ".text.lock.")) {
+		if ((locking_func = text_lock_function(name, bt, text)) &&
+		    (spl = value_search(locking_func, &offset)))
+			fprintf(ofp, " (via %s)", spl->name);
+	}
+
+	if (module_symbol(text, NULL, &lm, NULL, 0))
+		fprintf(ofp, " [%s]", lm->mod_name);
+
+	if (bt->flags & BT_FRAMESIZE_DISABLE)
+		fprintf(ofp, " *");
+
+	fprintf(ofp, "\n");
+
+	if (bt->flags & BT_LINE_NUMBERS) {
+		get_line_number(text, buf1, FALSE);
+		if (strlen(buf1) != 0)
+			fprintf(ofp, "    %s\n", buf1);
+	}
+
+	if (eframe_check >= 0) {
+		if (x86_64_exception_frame(EFRAME_PRINT|EFRAME_VERIFY, 
+					   bt->stackbase +
+					   (stkindex * sizeof(long)) +
+					   eframe_check,
+					   NULL, bt, ofp))
+			result = BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED;
+	}
+
+	if (BT_REFERENCE_CHECK(bt))
+		x86_64_do_bt_reference_check(bt, text, name);
+
+	bt->call_target = name;
+
+	if (is_direct_call_target(bt)) {
+		if (CRASHDEBUG(2))
+			fprintf(ofp, "< enable BT_CHECK_CALLER for %s >\n", 
+				bt->call_target);
+		bt->flags |= BT_CHECK_CALLER;
+	} else {
+		if (CRASHDEBUG(2) && (bt->flags & BT_CHECK_CALLER))
+			fprintf(ofp, "< disable BT_CHECK_CALLER for %s >\n", 
+				bt->call_target);
+
+		if (bt->flags & BT_CHECK_CALLER) {
+			if (CRASHDEBUG(2))
+			    	fprintf(ofp, "< set BT_NO_CHECK_CALLER >\n");
+			bt->flags |= BT_NO_CHECK_CALLER;
+		}
+
+		bt->flags &= ~(ulonglong)BT_CHECK_CALLER;
+	}
+
+	return result;
+}
+
+static void x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 {
 	int i, level, done, framesize, estack_index;
 	ulong rsp, offset, stacktop;
@@ -1494,7 +1487,7 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 		return;
 	}
 
-        if (bt->flags & BT_TEXT_SYMBOLS) {
+	if (bt->flags & BT_TEXT_SYMBOLS) {
 		if ((bt->flags & BT_USER_SPACE) &&
 		    !(bt->flags & BT_TEXT_SYMBOLS_ALL))
 			return;
@@ -1539,7 +1532,6 @@ x86_64_low_budget_back_trace_cmd(struct bt_info *bt_in)
 		bt->flags &= ~BT_START;
 		level++;
 	}
-
 
         if ((estack = x86_64_in_exception_stack(bt, &estack_index))) {
 in_exception_stack:
@@ -1621,9 +1613,10 @@ in_exception_stack:
 	                }
 		}
 
-                cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0, 
-			bt->stackbuf + (bt->stacktop - bt->stackbase) - 
-			SIZE(pt_regs), bt, ofp);
+		cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0, 
+					    bt->stackbuf +
+					    (bt->stacktop - bt->stackbase) -
+					    SIZE(pt_regs), bt, ofp);
 
 		if (!BT_REFERENCE_CHECK(bt))
 			fprintf(fp, "--- <%s exception stack> ---\n",
@@ -1697,16 +1690,15 @@ in_exception_stack:
 
 		bt->flags &= ~BT_FRAMESIZE_DISABLE;
 
-                for (i = (rsp - bt->stackbase)/sizeof(ulong);
+                for (i = (rsp - bt->stackbase) / sizeof(ulong);
                     !done && (rsp < stacktop); i++, rsp += sizeof(ulong)) {
 
-                        up = (ulong *)(&bt->stackbuf[i*sizeof(ulong)]);
+                        up = (ulong *)(&bt->stackbuf[i * sizeof(ulong)]);
 
-                        if (!is_kernel_text(*up))
-                                continue;
+			if (!is_kernel_text(*up))
+				continue;
 
-                        switch (x86_64_print_stack_entry(bt, ofp, level, i,*up))
-                        {
+			switch (x86_64_print_stack_entry(bt, ofp, level, i,*up)) {
 			case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
 				i += SIZE(pt_regs)/sizeof(ulong);
@@ -1714,46 +1706,47 @@ in_exception_stack:
 					level++;
 					break;
 				} /* else fall through */
-                        case BACKTRACE_ENTRY_DISPLAYED:
-                                level++;
+			case BACKTRACE_ENTRY_DISPLAYED:
+				level++;
 				if ((framesize = x86_64_get_framesize(bt, 
-				    bt->eframe_ip ? bt->eframe_ip : *up, rsp)) >= 0) {
+								      bt->eframe_ip ? bt->eframe_ip : *up, rsp)) >= 0) {
 					rsp += framesize;
 					i += framesize/sizeof(ulong);
 				}
-                                break;
-                        case BACKTRACE_ENTRY_IGNORED:
-                                break;
-                        case BACKTRACE_COMPLETE:
-                                done = TRUE;
-                                break;
-                        }
-                }
+				break;
+			case BACKTRACE_ENTRY_IGNORED:
+				break;
+			case BACKTRACE_COMPLETE:
+				done = TRUE;
+				break;
+			}
+		}
 
 		if (!BT_REFERENCE_CHECK(bt))
-                	fprintf(fp, "--- <IRQ stack> ---\n");
+			fprintf(fp, "--- <IRQ stack> ---\n");
 
                 /*
 		 *  stack = (unsigned long *) (irqstack_end[-1]);
 		 *  (where irqstack_end is 64 bytes below page end)
                  */
-                up = (ulong *)(&bt->stackbuf[stacktop - bt->stackbase]);
-                up -= 1;
-                irq_eframe = rsp = bt->stkptr = x86_64_irq_eframe_link(*up, bt, ofp);
+		up = (ulong *)(&bt->stackbuf[stacktop - bt->stackbase]);
 		up -= 1;
-                bt->instptr = *up;
+		irq_eframe = rsp = bt->stkptr = x86_64_irq_eframe_link(*up, bt, ofp);
+		up -= 1;
+		bt->instptr = *up;
 		/*
 		 *  No exception frame when coming from call_softirq.
 		 */
 		if ((sp = value_search(bt->instptr, &offset)) && 
 		    STREQ(sp->name, "call_softirq"))
 			irq_eframe = 0;
-                bt->frameptr = 0;
-                done = FALSE;
-        } else
+		bt->frameptr = 0;
+		done = FALSE;
+        } else {
 		irq_eframe = 0;
+	}
 
-        if (!done && (estack = x86_64_in_exception_stack(bt, &estack_index))) 
+	if (!done && (estack = x86_64_in_exception_stack(bt, &estack_index))) 
 		goto in_exception_stack;
 
 	if (!done && (bt->flags & (BT_EXCEPTION_STACK|BT_IRQSTACK))) {
@@ -1799,38 +1792,37 @@ in_exception_stack:
 		/*
 	 	 *  Now fill the local stack buffer from the process stack.
 	  	 */
-               	if (!readmem(bt->stackbase, KVADDR, bt->stackbuf,
-                    bt->stacktop - bt->stackbase, 
-		    "irqstack contents", RETURN_ON_ERROR))
-                	error(FATAL, "read of process stack at %lx failed\n",
-				bt->stackbase);
+		if (!readmem(bt->stackbase, KVADDR, bt->stackbuf,
+			     bt->stacktop - bt->stackbase, 
+			     "irqstack contents", RETURN_ON_ERROR))
+			error(FATAL, "read of process stack at %lx failed\n",
+			      bt->stackbase);
 	}
 
 	/*
 	 *  For a normally blocked task, hand-create the first level(s).
 	 *  associated with __schedule() and/or schedule().
 	 */
-        if (!done && 
+	if (!done &&
 	    !(bt->flags & (BT_TEXT_SYMBOLS|BT_EXCEPTION_STACK|BT_IRQSTACK)) &&
-            (rip_symbol = closest_symbol(bt->instptr)) &&
+	    (rip_symbol = closest_symbol(bt->instptr)) &&
 	    (STREQ(rip_symbol, "thread_return") || 
 	     STREQ(rip_symbol, "schedule") || 
 	     STREQ(rip_symbol, "__schedule"))) {
 		if (STREQ(rip_symbol, "__schedule")) {
 			i = (rsp - bt->stackbase)/sizeof(ulong);
-			x86_64_print_stack_entry(bt, ofp, level, 
-				i, bt->instptr);
+			x86_64_print_stack_entry(bt, ofp, level, i, bt->instptr);
 			level++;
 			rsp = __schedule_frame_adjust(rsp, bt);
 			if (STREQ(closest_symbol(bt->instptr), "schedule"))
 				bt->flags |= BT_SCHEDULE;
-		} else
+		} else {
 			bt->flags |= BT_SCHEDULE;
+		}
 
 		if (bt->flags & BT_SCHEDULE) {
-			i = (rsp - bt->stackbase)/sizeof(ulong);
-			x86_64_print_stack_entry(bt, ofp, level, 
-				i, bt->instptr);
+			i = (rsp - bt->stackbase) / sizeof(ulong);
+			x86_64_print_stack_entry(bt, ofp, level, i, bt->instptr);
 			bt->flags &= ~(ulonglong)BT_SCHEDULE;
 			rsp += sizeof(ulong);
 			level++;
@@ -1862,23 +1854,21 @@ in_exception_stack:
 				rsp += framesize;
 		}
 		level++;
-        }
+	}
 
-	/*
-	 *  Walk the process stack.  
-	 */
-
+	/*  Walk the process stack.  */
 	bt->flags &= ~BT_FRAMESIZE_DISABLE;
 
-        for (i = (rsp - bt->stackbase)/sizeof(ulong);
-	     !done && (rsp < bt->stacktop); i++, rsp += sizeof(ulong)) {
+	for (i = (rsp - bt->stackbase) / sizeof(ulong);
+	     !done && (rsp < bt->stacktop);
+	     i++, rsp += sizeof(ulong)) {
 
-		up = (ulong *)(&bt->stackbuf[i*sizeof(ulong)]);
+		up = (ulong *)(&bt->stackbuf[i * sizeof(ulong)]);
 
 		if (!is_kernel_text(*up))
 			continue;
 
-		if ((bt->flags & BT_CHECK_CALLER)) {
+		if (bt->flags & BT_CHECK_CALLER) {
 			/*
 			 *  A non-zero offset value from the value_search() 
 			 *  lets us know if it's a real text return address.
@@ -1894,8 +1884,7 @@ in_exception_stack:
 			 *  routine above called before leaving its return 
 			 *  address on the stack -- if it can be determined.
 			 */
-			sp = x86_64_function_called_by((*up)-5); 
-
+			sp = x86_64_function_called_by((*up) - 5); 
 			if (sp == NULL) {
 				/* 
 				 *  We were unable to get the called function.
@@ -1912,8 +1901,8 @@ in_exception_stack:
 					continue;
 				}
 			} else if ((machdep->flags & SCHED_TEXT) &&
-				STREQ(bt->call_target, "schedule") &&
-				STREQ(sp->name, "__sched_text_start")) {
+				   STREQ(bt->call_target, "schedule") &&
+				   STREQ(sp->name, "__sched_text_start")) {
 				;  /*  bait and switch */
 			} else if (!STREQ(sp->name, bt->call_target)) {
 				/*
@@ -1929,14 +1918,13 @@ in_exception_stack:
 			}
 		}
 
-		switch (x86_64_print_stack_entry(bt, ofp, level, i,*up))
-		{
+		switch (x86_64_print_stack_entry(bt, ofp, level, i, *up)) {
 		case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 			last_process_stack_eframe = rsp + 8;
 			if (x86_64_print_eframe_location(last_process_stack_eframe, level, ofp))
 				level++;
 			rsp += SIZE(pt_regs);
-			i += SIZE(pt_regs)/sizeof(ulong);
+			i += SIZE(pt_regs) / sizeof(ulong);
 			if (!bt->eframe_ip) {
 				level++;
 				break;
@@ -1957,26 +1945,27 @@ in_exception_stack:
 		}
         }
 
-        if (!irq_eframe && !is_kernel_thread(bt->tc->task) &&
+        if (!irq_eframe &&
+	    !is_kernel_thread(bt->tc->task) &&
             (GET_STACKBASE(bt->tc->task) == bt->stackbase)) {
 		user_mode_eframe = bt->stacktop - SIZE(pt_regs);
 		if (last_process_stack_eframe < user_mode_eframe)
                 	x86_64_exception_frame(EFRAME_PRINT, 0, bt->stackbuf +
-                        	(bt->stacktop - bt->stackbase) - SIZE(pt_regs),
-                        	bt, ofp);
+					       (bt->stacktop - bt->stackbase) -
+					       SIZE(pt_regs),
+					       bt, ofp);
 	}
 
-        if (bt->flags & BT_TEXT_SYMBOLS) {
-        	if (BT_REFERENCE_FOUND(bt)) {
-                	print_task_header(fp, task_to_context(bt->task), 0);
+	if (bt->flags & BT_TEXT_SYMBOLS) {
+		if (BT_REFERENCE_FOUND(bt)) {
+			print_task_header(fp, task_to_context(bt->task), 0);
 			BCOPY(bt_in, bt, sizeof(struct bt_info));
-                	bt->ref = NULL;
-                	machdep->back_trace(bt);
-                	fprintf(fp, "\n");
-        	}
+			bt->ref = NULL;
+			machdep->back_trace(bt);
+			fprintf(fp, "\n");
+		}
 	}
 }
-
 /* END copy */
 
 void xbt_func(void)
