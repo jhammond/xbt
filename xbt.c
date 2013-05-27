@@ -7,9 +7,10 @@
 #include <string.h>
 #include <malloc.h>
 #include <ftw.h>
+#include <libelf.h>
+#include <crash/defs.h>
 #include "frame_info.h"
 #include "list.h"
-#include "defs.h"
 
 /* Temp. Returns malloced string. */
 static char *module_debuginfo_path(struct load_module *lm)
@@ -1416,7 +1417,8 @@ out:
 "    process stack pointer: %lx\n"\
 "       current stack base: %lx\n"
 
-static void x86_64_low_budget_back_trace_cmd(const struct bt_info *bt_in)
+static void x86_64_low_budget_back_trace_cmd(const struct bt_info *bt_in,
+					     struct list_head *frame_list)
 {
 	struct machine_specific *ms = machdep->machspec;
 	struct bt_info bt_local, *bt;
@@ -1432,7 +1434,6 @@ static void x86_64_low_budget_back_trace_cmd(const struct bt_info *bt_in)
 	int level = 0;
 	bool done = false;
 	int i, frame_size, estack_index;
-	LIST_HEAD(frame_list);
 
 	bt_local = *bt_in;
 	bt = &bt_local;
@@ -1504,7 +1505,7 @@ static void x86_64_low_budget_back_trace_cmd(const struct bt_info *bt_in)
 		else if (SADUMP_DUMPFILE())
 			sadump_display_regs(bt->tc->processor, fp);
         } else if (bt->flags & BT_START) {
-                x86_64_print_stack_entry(&frame_list, bt, fp, level,
+                x86_64_print_stack_entry(frame_list, bt, fp, level,
                         0, bt->instptr);
 		bt->flags &= ~BT_START;
 		level++;
@@ -1539,7 +1540,7 @@ in_exception_stack:
 		if (irq_eframe) {
 			bt->flags |= BT_EXCEPTION_FRAME;
 			i = (irq_eframe - bt->stackbase) / sizeof(ulong);
-			x86_64_print_stack_entry(&frame_list, bt, fp, level, i, bt->instptr);
+			x86_64_print_stack_entry(frame_list, bt, fp, level, i, bt->instptr);
 			bt->flags &= ~(ulonglong)BT_EXCEPTION_FRAME;
 			cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0,
 						    bt->stackbuf +
@@ -1566,7 +1567,7 @@ in_exception_stack:
 			if (!is_kernel_text(*up))
 		        	continue;
 
-			switch (x86_64_print_stack_entry(&frame_list, bt, fp, level, i, *up)) {
+			switch (x86_64_print_stack_entry(frame_list, bt, fp, level, i, *up)) {
 			case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
 				i += SIZE(pt_regs) / sizeof(ulong);
@@ -1619,7 +1620,7 @@ in_exception_stack:
 		 */
 		if (!done) {
 			bt->flags |= BT_START|BT_SAVE_EFRAME_IP;
-			x86_64_print_stack_entry(&frame_list, bt, fp, level,
+			x86_64_print_stack_entry(frame_list, bt, fp, level,
 						 0, bt->instptr);
 			bt->flags &= 
 			    	~(BT_START|BT_SAVE_EFRAME_IP|BT_FRAMESIZE_DISABLE);
@@ -1676,7 +1677,7 @@ in_exception_stack:
 			if (!is_kernel_text(*up))
 				continue;
 
-			switch (x86_64_print_stack_entry(&frame_list, bt, fp, level, i, *up)) {
+			switch (x86_64_print_stack_entry(frame_list, bt, fp, level, i, *up)) {
 			case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
 				i += SIZE(pt_regs) / sizeof(ulong);
@@ -1789,7 +1790,7 @@ in_exception_stack:
 	     STREQ(rip_symbol, "__schedule"))) {
 		if (STREQ(rip_symbol, "__schedule")) {
 			i = (rsp - bt->stackbase) / sizeof(ulong);
-			x86_64_print_stack_entry(&frame_list, bt, fp, level, i, bt->instptr);
+			x86_64_print_stack_entry(frame_list, bt, fp, level, i, bt->instptr);
 			level++;
 			rsp = __schedule_frame_adjust(rsp, bt);
 			if (STREQ(closest_symbol(bt->instptr), "schedule"))
@@ -1800,7 +1801,7 @@ in_exception_stack:
 
 		if (bt->flags & BT_SCHEDULE) {
 			i = (rsp - bt->stackbase) / sizeof(ulong);
-			x86_64_print_stack_entry(&frame_list, bt, fp, level, i, bt->instptr);
+			x86_64_print_stack_entry(frame_list, bt, fp, level, i, bt->instptr);
 			bt->flags &= ~(ulonglong)BT_SCHEDULE;
 			rsp += sizeof(ulong);
 			level++;
@@ -1816,7 +1817,7 @@ in_exception_stack:
         if (irq_eframe) {
                 bt->flags |= BT_EXCEPTION_FRAME;
                 i = (irq_eframe - bt->stackbase) / sizeof(ulong);
-                x86_64_print_stack_entry(&frame_list, bt, fp, level, i, bt->instptr);
+                x86_64_print_stack_entry(frame_list, bt, fp, level, i, bt->instptr);
                 bt->flags &= ~(ulonglong)BT_EXCEPTION_FRAME;
                 cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0, 
 			bt->stackbuf + (irq_eframe - bt->stackbase), bt, fp);
@@ -1885,7 +1886,7 @@ in_exception_stack:
 			}
 		}
 
-		switch (x86_64_print_stack_entry(&frame_list, bt, fp, level, i, *up)) {
+		switch (x86_64_print_stack_entry(frame_list, bt, fp, level, i, *up)) {
 		case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 			last_process_stack_eframe = rsp + 8;
 			if (x86_64_print_eframe_location(last_process_stack_eframe, level, fp))
@@ -1926,24 +1927,64 @@ in_exception_stack:
 					       bt, fp);
 	}
 
-	/* fi_start includes the pushed rip */
-
-	struct frame_info *fi;
-	list_for_each_entry(fi, &frame_list, fi_link) {
-		if (fi->fi_link.next != &frame_list)
-			fi->fi_end = fi_next(fi)->fi_start;
-		else
-			fi->fi_end = fi->fi_start;
-
-		fprintf(fp, "### level %d, start %#016lx, end %#016lx, "
-			"size %lu, text %#016lx, name %s, mod %s\n",
-			fi->fi_level, fi->fi_start, fi->fi_end,
-			fi->fi_end - fi->fi_start, fi->fi_text,
-			fi->fi_syment != NULL ? fi->fi_syment->name : "NONE",
-			fi->fi_mod != NULL ? fi->fi_mod->mod_name : "NONE");
-	}
 }
 /* END copy */
+
+void frame_info_emit(struct frame_info *fi, FILE *file)
+{
+	char *mod_path = NULL;
+	int mod_fd = -1;
+	Elf *mod_elf = NULL;
+	Elf64_Ehdr *hdr;
+
+	fprintf(file, "### level %d, start %#016lx, end %#016lx, "
+		"size %lu, *base %#016lx, "
+		"text %#016lx, name %s, mod %s\n",
+		fi->fi_level, fi->fi_start, fi->fi_end,
+		fi->fi_end - fi->fi_start,
+		*(ulong *)fi->fi_base,
+		fi->fi_text,
+		fi->fi_syment != NULL ? fi->fi_syment->name : "NONE",
+		fi->fi_mod != NULL ? fi->fi_mod->mod_name : "NONE");
+
+	if (fi->fi_mod == NULL)
+		goto out;
+
+	mod_path = module_debuginfo_path(fi->fi_mod);
+	if (mod_path == NULL) {
+		/* ... */
+		goto out;
+	}
+
+	mod_fd = open(mod_path, O_RDONLY);
+	if (mod_fd < 0) {
+		/* INFO? */
+		error(INFO, "cannot open '%s': %s\n",
+		      mod_path, strerror(errno));
+		goto out;
+	}
+
+	mod_elf = elf_begin(mod_fd, ELF_C_READ, NULL);
+	if (mod_elf == NULL) {
+		error(INFO, "error reading ELF file '%s': %s\n",
+		      mod_path, elf_errmsg(elf_errno()));
+		goto out;
+	}
+
+	/* hdr = elf64_getehdr(mod_elf); */
+
+	/* print_infos() */
+
+
+out:
+	if (mod_elf != NULL)
+		elf_end(mod_elf);
+
+	if (!(mod_fd < 0))
+		close(mod_fd);
+
+	free(mod_path);
+}
 
 void xbt_func(void)
 {
@@ -1958,6 +1999,7 @@ void xbt_func(void)
 	}, *bt = &bt_info;
 	ulong rsp;
 	char *rip_sym;
+	LIST_HEAD(frame_list);
 
 	fprintf(fp, "# stack %#016lx %#016lx\n", bt->stackbase, bt->stacktop);
 
@@ -1979,7 +2021,34 @@ void xbt_func(void)
 	rip_sym = closest_symbol(bt->instptr);
 	fprintf(fp, "# rip_sym %s\n", rip_sym);
 
-	x86_64_low_budget_back_trace_cmd(bt); 
+	x86_64_low_budget_back_trace_cmd(bt, &frame_list);
+
+	/* fi_start includes the pushed rip */
+
+	struct frame_info *fi;
+	list_for_each_entry(fi, &frame_list, fi_link) {
+		if (fi->fi_link.next != &frame_list)
+			fi->fi_end = fi_next(fi)->fi_start;
+		else
+			fi->fi_end = fi->fi_start;
+
+		/* Wrong. */
+		fi->fi_base = &bt->stackbuf[fi->fi_end -
+					    bt->stackbase -
+					    sizeof(ulong)];
+
+		fprintf(fp, "### level %d, start %#016lx, end %#016lx, "
+			"size %lu, *base %#016lx, "
+			"text %#016lx, name %s, mod %s\n",
+			fi->fi_level, fi->fi_start, fi->fi_end,
+			fi->fi_end - fi->fi_start,
+			*(ulong *)fi->fi_base,
+			fi->fi_text,
+			fi->fi_syment != NULL ? fi->fi_syment->name : "NONE",
+			fi->fi_mod != NULL ? fi->fi_mod->mod_name : "NONE");
+
+		frame_info_emit(fi, fp);
+	}
 }
 
 void xmod_func(void)
