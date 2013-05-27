@@ -1,7 +1,3 @@
-/* xmod.c - simple example of a crash extension
- *
- # gcc -Wall -D_GNU_SOURCE -I/usr/include/crash -shared -rdynamic -o xmod.so xmod.c -fPIC -DX86_64
-*/
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1930,12 +1926,14 @@ in_exception_stack:
 }
 /* END copy */
 
-void frame_info_emit(struct frame_info *fi, FILE *file)
+#define xbt_trace(fmt, args...) \
+	error(INFO, "@ %s:%d: "fmt, __func__, __LINE__, ##args)
+
+static void fprint_frame_info(FILE *file, struct frame_info *fi)
 {
 	char *mod_path = NULL;
 	int mod_fd = -1;
 	Elf *mod_elf = NULL;
-	Elf64_Ehdr *hdr;
 
 	fprintf(file, "### level %d, start %#016lx, end %#016lx, "
 		"size %lu, *base %#016lx, "
@@ -1964,6 +1962,13 @@ void frame_info_emit(struct frame_info *fi, FILE *file)
 		goto out;
 	}
 
+	if (elf_version(EV_CURRENT) == EV_NONE) {
+		/* FATAL? */
+		error(INFO, "cannot set libelf version: %s\n",
+		      elf_errmsg(elf_errno()));
+		goto out;
+	}
+
 	mod_elf = elf_begin(mod_fd, ELF_C_READ, NULL);
 	if (mod_elf == NULL) {
 		error(INFO, "error reading ELF file '%s': %s\n",
@@ -1971,11 +1976,38 @@ void frame_info_emit(struct frame_info *fi, FILE *file)
 		goto out;
 	}
 
-	/* hdr = elf64_getehdr(mod_elf); */
+	Elf64_Ehdr *ehdr = elf64_getehdr(mod_elf);
+	if (ehdr == NULL) {
+		/* ... */
+		goto out;
+	}
+
+	Elf_Scn *scn = NULL;
+	Elf64_Shdr *shdr;
+	const char *scn_name;
+
+	while (1) {
+		scn = elf_nextscn(mod_elf, scn);
+		if (scn == NULL) {
+			error(INFO, "ELF file '%s' contains no '.debug_info' section\n",
+			      mod_path);
+			goto out;
+		}
+
+		shdr = elf64_getshdr(scn);
+		scn_name = elf_strptr(mod_elf, ehdr->e_shstrndx, shdr->sh_name);
+
+		if (strcmp(scn_name, ".debug_info") == 0)
+			break;
+	}
+
+	xbt_trace("found %s %s, offset %u, size %u\n",
+		  mod_path, scn_name, shdr->sh_offset, shdr->sh_size);
+
+	Elf_Data *data = elf_getdata(scn, NULL);
+	xbt_trace("data size %zu\n", data->d_size);
 
 	/* print_infos() */
-
-
 out:
 	if (mod_elf != NULL)
 		elf_end(mod_elf);
@@ -2001,11 +2033,11 @@ void xbt_func(void)
 	char *rip_sym;
 	LIST_HEAD(frame_list);
 
-	fprintf(fp, "# stack %#016lx %#016lx\n", bt->stackbase, bt->stacktop);
+	xbt_trace("stack %#016lx %#016lx\n", bt->stackbase, bt->stacktop);
 
 	fill_stackbuf(bt);
 	machdep->get_stack_frame(bt, &bt->instptr, &bt->stkptr);
-	fprintf(fp, "# rip %#016lx, rsp %#016lx\n",  bt->instptr, bt->stkptr);
+	xbt_trace("rip %#016lx, rsp %#016lx\n",  bt->instptr, bt->stkptr);
 
 	rsp = bt->stkptr;
 	if (rsp == 0 || !accessible(rsp)) {
@@ -2019,7 +2051,7 @@ void xbt_func(void)
 	}
 
 	rip_sym = closest_symbol(bt->instptr);
-	fprintf(fp, "# rip_sym %s\n", rip_sym);
+	xbt_trace("rip_sym %s\n", rip_sym);
 
 	x86_64_low_budget_back_trace_cmd(bt, &frame_list);
 
@@ -2037,17 +2069,17 @@ void xbt_func(void)
 					    bt->stackbase -
 					    sizeof(ulong)];
 
-		fprintf(fp, "### level %d, start %#016lx, end %#016lx, "
-			"size %lu, *base %#016lx, "
-			"text %#016lx, name %s, mod %s\n",
-			fi->fi_level, fi->fi_start, fi->fi_end,
-			fi->fi_end - fi->fi_start,
-			*(ulong *)fi->fi_base,
-			fi->fi_text,
-			fi->fi_syment != NULL ? fi->fi_syment->name : "NONE",
-			fi->fi_mod != NULL ? fi->fi_mod->mod_name : "NONE");
+		xbt_trace("level %d, start %#016lx, end %#016lx, "
+			  "size %lu, *base %#016lx, "
+			  "text %#016lx, name %s, mod %s\n",
+			  fi->fi_level, fi->fi_start, fi->fi_end,
+			  fi->fi_end - fi->fi_start,
+			  *(ulong *)fi->fi_base,
+			  fi->fi_text,
+			  fi->fi_syment != NULL ? fi->fi_syment->name : "NONE",
+			  fi->fi_mod != NULL ? fi->fi_mod->mod_name : "NONE");
 
-		frame_info_emit(fi, fp);
+		fprint_frame_info(fp, fi);
 	}
 }
 
