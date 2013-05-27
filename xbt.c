@@ -7,6 +7,7 @@
 #include <string.h>
 #include <malloc.h>
 #include <ftw.h>
+#include "frame_info.h"
 #include "list.h"
 #include "defs.h"
 
@@ -69,118 +70,118 @@ static bool is_vsyscall_addr(ulong rip)
 	return page != 0 && rip >= page && rip < page + PAGESIZE();
 }
 
-struct framesize_cache {
+struct frame_size_cache {
 	ulong textaddr;
-	int framesize;
+	int frame_size;
 	int exception;
 };
 
-static struct framesize_cache *x86_64_framesize_cache;
-static int framesize_cache_entries;
+static struct frame_size_cache *x86_64_frame_size_cache;
+static int frame_size_cache_entries;
 
-#define FRAMESIZE_QUERY  (1)
-#define FRAMESIZE_ENTER  (2)
-#define FRAMESIZE_DUMP   (3)
+#define FRAME_SIZE_QUERY  (1)
+#define FRAME_SIZE_ENTER  (2)
+#define FRAME_SIZE_DUMP   (3)
 
-#define FRAMESIZE_CACHE_INCR (50)
+#define FRAME_SIZE_CACHE_INCR (50)
 
-static int x86_64_framesize_cache_resize(void)
+static int x86_64_frame_size_cache_resize(void)
 {
-	struct framesize_cache *new_fc, *fc;
+	struct frame_size_cache *new_fc, *fc;
 	int i;
 
-	new_fc = realloc(x86_64_framesize_cache,
-			 (framesize_cache_entries + FRAMESIZE_CACHE_INCR) * 
-			 sizeof(struct framesize_cache));
+	new_fc = realloc(x86_64_frame_size_cache,
+			 (frame_size_cache_entries + FRAME_SIZE_CACHE_INCR) * 
+			 sizeof(struct frame_size_cache));
 	if (new_fc == NULL) {
-		error(INFO, "cannot realloc x86_64_framesize_cache space!\n");
+		error(INFO, "cannot realloc x86_64_frame_size_cache space!\n");
 		return false;
 	}
 
-	fc = new_fc + framesize_cache_entries;
-	for (i = framesize_cache_entries; 
-	     i < (framesize_cache_entries+FRAMESIZE_CACHE_INCR); 
+	fc = new_fc + frame_size_cache_entries;
+	for (i = frame_size_cache_entries; 
+	     i < (frame_size_cache_entries+FRAME_SIZE_CACHE_INCR); 
 	     fc++, i++) {
 		fc->textaddr = 0;
-		fc->framesize = 0;
+		fc->frame_size = 0;
 		fc->exception = 0;
 	}	
 
-	x86_64_framesize_cache = new_fc;
-	framesize_cache_entries += FRAMESIZE_CACHE_INCR;
+	x86_64_frame_size_cache = new_fc;
+	frame_size_cache_entries += FRAME_SIZE_CACHE_INCR;
 
 	return true;
 }
 
 static int
-x86_64_framesize_cache_func(int cmd, ulong textaddr, int *framesize, int exception)
+x86_64_frame_size_cache_func(int cmd, ulong textaddr, int *frame_size, int exception)
 {
 	int i, n;
-	struct framesize_cache *fc;
+	struct frame_size_cache *fc;
 	char buf[BUFSIZE];
 
-	if (!x86_64_framesize_cache) {
-		framesize_cache_entries = FRAMESIZE_CACHE_INCR;
-		if ((x86_64_framesize_cache = calloc(framesize_cache_entries,
-		    sizeof(struct framesize_cache))) == NULL)
+	if (!x86_64_frame_size_cache) {
+		frame_size_cache_entries = FRAME_SIZE_CACHE_INCR;
+		if ((x86_64_frame_size_cache = calloc(frame_size_cache_entries,
+		    sizeof(struct frame_size_cache))) == NULL)
 			error(FATAL, 
-			    "cannot calloc x86_64_framesize_cache space!\n");
+			    "cannot calloc x86_64_frame_size_cache space!\n");
 	}
 
 	switch (cmd) {
-	case FRAMESIZE_QUERY:
-		fc = &x86_64_framesize_cache[0];
-		for (i = 0; i < framesize_cache_entries; i++, fc++) {
+	case FRAME_SIZE_QUERY:
+		fc = &x86_64_frame_size_cache[0];
+		for (i = 0; i < frame_size_cache_entries; i++, fc++) {
 			if (fc->textaddr == textaddr) {
 				if (fc->exception != exception)
 					return FALSE;
-				*framesize = fc->framesize;
+				*frame_size = fc->frame_size;
 				return TRUE;
 			}
 		}
 		return FALSE;
 
-	case FRAMESIZE_ENTER:
+	case FRAME_SIZE_ENTER:
 retry:
-		fc = &x86_64_framesize_cache[0];
-		for (i = 0; i < framesize_cache_entries; i++, fc++) {
+		fc = &x86_64_frame_size_cache[0];
+		for (i = 0; i < frame_size_cache_entries; i++, fc++) {
 			if ((fc->textaddr == 0) ||
 			    (fc->textaddr == textaddr)) {
-				if (*framesize == -1) {
+				if (*frame_size == -1) {
 					fc->textaddr = 0;
-					fc->framesize = 0;
+					fc->frame_size = 0;
 					fc->exception = 0;
-					for (n = i+1; n < framesize_cache_entries; 
+					for (n = i+1; n < frame_size_cache_entries; 
 					    i++, n++)
-						x86_64_framesize_cache[i] = 
-							x86_64_framesize_cache[n];
+						x86_64_frame_size_cache[i] = 
+							x86_64_frame_size_cache[n];
 					return 0;
 				}
 				fc->textaddr = textaddr;
-				fc->framesize = *framesize;
+				fc->frame_size = *frame_size;
 				fc->exception = exception;
-				return fc->framesize;
+				return fc->frame_size;
 			}
 		}
 
-		if (x86_64_framesize_cache_resize())
+		if (x86_64_frame_size_cache_resize())
 			goto retry;
 
-		return *framesize;
+		return *frame_size;
 
-	case FRAMESIZE_DUMP:
-		fc = &x86_64_framesize_cache[0];
-		for (i = 0; i < framesize_cache_entries; i++, fc++) {
+	case FRAME_SIZE_DUMP:
+		fc = &x86_64_frame_size_cache[0];
+		for (i = 0; i < frame_size_cache_entries; i++, fc++) {
 			if (fc->textaddr == 0) {
-				if (i < framesize_cache_entries - 1) {
+				if (i < frame_size_cache_entries - 1) {
 					fprintf(fp, "[%d-%d]: (unused)\n",
-						i, framesize_cache_entries-1);
+						i, frame_size_cache_entries-1);
 				}
 				break;
 			}
 
 			fprintf(fp, "[%3d]: %lx %3d %s (%s)\n", i,
-				fc->textaddr, fc->framesize,
+				fc->textaddr, fc->frame_size,
 				fc->exception ? "EX" : "CF",
 				value_to_symstr(fc->textaddr, buf, 0));
 		}
@@ -239,9 +240,9 @@ static struct syment *x86_64_function_called_by(ulong rip)
 }
 
 /*
- *  The __schedule() framesize should only have to be calculated
+ *  The __schedule() frame_size should only have to be calculated
  *  one time, but always verify that the previously-determined 
- *  framesize applies to this task, and if it doesn't, recalculate.
+ *  frame_size applies to this task, and if it doesn't, recalculate.
  *  Update the bt->instptr here, and return the new stack pointer.
  */
 static ulong __schedule_frame_adjust(ulong rsp_in, struct bt_info *bt)
@@ -249,12 +250,12 @@ static ulong __schedule_frame_adjust(ulong rsp_in, struct bt_info *bt)
 	int i, found;
 	ulong rsp, *up;
 	struct syment *sp;
-	int framesize;
+	int frame_size;
 
-	if (x86_64_framesize_cache_func(FRAMESIZE_QUERY, 
+	if (x86_64_frame_size_cache_func(FRAME_SIZE_QUERY, 
 					machdep->machspec->thread_return,
-					&framesize, 0)) {
-		rsp = rsp_in + framesize;
+					&frame_size, 0)) {
+		rsp = rsp_in + frame_size;
 		i = (rsp - bt->stackbase) / sizeof(ulong);
 		up = (ulong *)(&bt->stackbuf[i * sizeof(ulong)]);
 
@@ -277,11 +278,11 @@ static ulong __schedule_frame_adjust(ulong rsp_in, struct bt_info *bt)
 
 		if ((sp = x86_64_function_called_by((*up) - 5)) &&
 		    STREQ(sp->name, "__schedule")) {
-			framesize = (int)(rsp - rsp_in);
+			frame_size = (int)(rsp - rsp_in);
 			bt->instptr = *up;
-			x86_64_framesize_cache_func(FRAMESIZE_ENTER, 
+			x86_64_frame_size_cache_func(FRAME_SIZE_ENTER, 
 						    machdep->machspec->thread_return,
-						    &framesize, 0);
+						    &frame_size, 0);
 			bt->instptr = *up;
 			found = TRUE;
 			break;
@@ -421,9 +422,9 @@ ulong x86_64_get_framepointer(struct bt_info *bt, ulong rsp)
 }
 
 static int
-x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
+x86_64_get_frame_size(struct bt_info *bt, ulong textaddr, ulong rsp)
 {
-	int c, framesize, instr, arg, max;
+	int c, frame_size, instr, arg, max;
 	struct syment *sp;
 	long max_instructions;
 	ulong offset;
@@ -446,12 +447,12 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 	exception = bt->eframe_ip == textaddr ? TRUE : FALSE;
 
 	if (!(bt->flags & BT_FRAMESIZE_DEBUG) &&
-	    x86_64_framesize_cache_func(FRAMESIZE_QUERY, textaddr, &framesize,
+	    x86_64_frame_size_cache_func(FRAME_SIZE_QUERY, textaddr, &frame_size,
 					exception)) {
-		if (framesize == -1)
+		if (frame_size == -1)
 			bt->flags |= BT_FRAMESIZE_DISABLE;
 
-		return framesize;
+		return frame_size;
 	}
 
 	/*
@@ -483,12 +484,12 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 		    sizeof(short), "irq_entries_start instruction", 
 		    QUIET|RETURN_ON_ERROR) &&
 		    ((instr & 0xff) == PUSH_IMM8))
-			framesize = 0;
+			frame_size = 0;
 		else 
-			framesize = 8;
+			frame_size = 8;
 
-		return x86_64_framesize_cache_func(FRAMESIZE_ENTER, textaddr, 
-						   &framesize, exception);
+		return x86_64_frame_size_cache_func(FRAME_SIZE_ENTER, textaddr, 
+						   &frame_size, exception);
 	}
 
 	if ((machdep->flags & FRAMEPOINTER) &&
@@ -505,13 +506,13 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 		}
 
 		if (framepointer) {
-			framesize = framepointer - rsp;
-			return (x86_64_framesize_cache_func(FRAMESIZE_ENTER, 
-				textaddr, &framesize, 0));
+			frame_size = framepointer - rsp;
+			return (x86_64_frame_size_cache_func(FRAME_SIZE_ENTER, 
+				textaddr, &frame_size, 0));
 		}
 	}
 
-	framesize = max = 0;
+	frame_size = max = 0;
         max_instructions = textaddr - sp->value; 
 	instr = arg = -1;
 
@@ -568,18 +569,18 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 			break;
 
 		if (STRNEQ(arglist[instr], "push")) {
-			framesize += 8;
+			frame_size += 8;
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
-				fprintf(fp, "%s\t[framesize: %d]\n", 
-					strip_linefeeds(buf2), framesize);
-			max = framesize;
+				fprintf(fp, "%s\t[frame_size: %d]\n", 
+					strip_linefeeds(buf2), frame_size);
+			max = frame_size;
 	 	} else if (STRNEQ(arglist[instr], "pop") || 
 		    STRNEQ(arglist[instr], "leaveq")) {
-			if (framesize > 0)
-				framesize -= 8;
+			if (frame_size > 0)
+				frame_size -= 8;
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
-				fprintf(fp, "%s\t[framesize: %d]\n", 
-					strip_linefeeds(buf2), framesize);
+				fprintf(fp, "%s\t[frame_size: %d]\n", 
+					strip_linefeeds(buf2), frame_size);
 		} else if (arg_exists && STRNEQ(arglist[instr], "add") && 
 			(p1 = strstr(arglist[arg], ",%rsp"))) {
 			*p1 = NULLCHAR;
@@ -588,11 +589,11 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 			offset =  htol(p2+1, RETURN_ON_ERROR, &reterror);
 			if (reterror)
 				continue;
-			if (framesize > 0)
-				framesize -= offset;
+			if (frame_size > 0)
+				frame_size -= offset;
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
-				fprintf(fp, "%s\t[framesize: %d]\n", 
-					strip_linefeeds(buf2), framesize);
+				fprintf(fp, "%s\t[frame_size: %d]\n", 
+					strip_linefeeds(buf2), frame_size);
 		} else if (arg_exists && STRNEQ(arglist[instr], "sub") && 
 			(p1 = strstr(arglist[arg], ",%rsp"))) {
 			*p1 = NULLCHAR;
@@ -601,23 +602,23 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 			offset =  htol(p2+1, RETURN_ON_ERROR, &reterror);
 			if (reterror)
 				continue;
-			framesize += offset;
-			max = framesize;
+			frame_size += offset;
+			max = frame_size;
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
-				fprintf(fp, "%s\t[framesize: %d]\n", 
-					strip_linefeeds(buf2), framesize);
+				fprintf(fp, "%s\t[frame_size: %d]\n", 
+					strip_linefeeds(buf2), frame_size);
 		} else if (STRNEQ(arglist[instr], "retq")) {
 			if (!exception) {
-				framesize = max;
+				frame_size = max;
 				if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
-					fprintf(fp, "%s\t[framesize restored to: %d]\n", 
+					fprintf(fp, "%s\t[frame_size restored to: %d]\n", 
 						strip_linefeeds(buf2), max);
 			}
 		} else if (STRNEQ(arglist[instr], "retq_NOT_CHECKED")) {
 			bt->flags |= BT_FRAMESIZE_DISABLE;
-			framesize = -1;
+			frame_size = -1;
 			if (CRASHDEBUG(2) || (bt->flags & BT_FRAMESIZE_DEBUG))
-				fprintf(fp, "%s\t[framesize: DISABLED]\n", 
+				fprintf(fp, "%s\t[frame_size: DISABLED]\n", 
 					strip_linefeeds(buf2));
 			break;
 		} 
@@ -627,66 +628,66 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp)
 	if (textaddr_save)
 		textaddr = textaddr_save;
 
-	return (x86_64_framesize_cache_func(FRAMESIZE_ENTER, textaddr, 
-		&framesize, exception));
+	return (x86_64_frame_size_cache_func(FRAME_SIZE_ENTER, textaddr, 
+		&frame_size, exception));
 }
 
 #if 0
-static void x86_64_framesize_debug(struct bt_info *bt)
+static void x86_64_frame_size_debug(struct bt_info *bt)
 {
-	int framesize;
+	int frame_size;
 	int exception;
 
 	exception = (bt->flags & BT_EFRAME_SEARCH);
 
 	switch (bt->hp->esp) {
 	case 1: /* "dump" */
-		x86_64_framesize_cache_func(FRAMESIZE_DUMP, 0, NULL, 0);
+		x86_64_frame_size_cache_func(FRAME_SIZE_DUMP, 0, NULL, 0);
 		break;
 	case 0:
 		if (bt->hp->eip) {  /* clear one entry */
-			framesize = -1;
-			x86_64_framesize_cache_func(FRAMESIZE_ENTER, bt->hp->eip, 
-				&framesize, exception);
+			frame_size = -1;
+			x86_64_frame_size_cache_func(FRAME_SIZE_ENTER, bt->hp->eip, 
+				&frame_size, exception);
 		} else { /* clear all entries */
-			BZERO(&x86_64_framesize_cache[0], 
-			    sizeof(struct framesize_cache)*framesize_cache_entries);
-			fprintf(fp, "framesize cache cleared\n");
+			BZERO(&x86_64_frame_size_cache[0], 
+			    sizeof(struct frame_size_cache)*frame_size_cache_entries);
+			fprintf(fp, "frame_size cache cleared\n");
 		}
 		break;
 	case -1:
 		if (!bt->hp->eip)
-			error(INFO, "x86_64_framesize_debug: ignoring command\n");
+			error(INFO, "x86_64_frame_size_debug: ignoring command\n");
 		else
-			x86_64_get_framesize(bt, bt->hp->eip, 0);
+			x86_64_get_frame_size(bt, bt->hp->eip, 0);
 		break;
 	case -3:
 		machdep->flags |= FRAMEPOINTER;
-		BZERO(&x86_64_framesize_cache[0], 
-			sizeof(struct framesize_cache)*framesize_cache_entries);
+		BZERO(&x86_64_frame_size_cache[0], 
+			sizeof(struct frame_size_cache)*frame_size_cache_entries);
 		fprintf(fp, 
-			"framesize cache cleared and FRAMEPOINTER turned ON\n");
+			"frame_size cache cleared and FRAMEPOINTER turned ON\n");
 		break;
 	case -4:
 		machdep->flags &= ~FRAMEPOINTER;
-		BZERO(&x86_64_framesize_cache[0], 
-			sizeof(struct framesize_cache)*framesize_cache_entries);
+		BZERO(&x86_64_frame_size_cache[0], 
+			sizeof(struct frame_size_cache)*frame_size_cache_entries);
 		fprintf(fp,
-			"framesize cache cleared and FRAMEPOINTER turned OFF\n");
+			"frame_size cache cleared and FRAMEPOINTER turned OFF\n");
 		break;
 	default:
 		if (bt->hp->esp > 1) {
-			framesize = bt->hp->esp;
+			frame_size = bt->hp->esp;
 			if (bt->hp->eip)
-				x86_64_framesize_cache_func(FRAMESIZE_ENTER, bt->hp->eip, 
-					&framesize, exception);
+				x86_64_frame_size_cache_func(FRAME_SIZE_ENTER, bt->hp->eip, 
+					&frame_size, exception);
 		} else {
-			error(INFO, "x86_64_framesize_debug: ignoring command\n");
+			error(INFO, "x86_64_frame_size_debug: ignoring command\n");
 		}
 		break;
 	}
 }
-#endif /* 0 x86_64_framesize_debug */
+#endif /* 0 x86_64_frame_size_debug */
 
 static bool is_direct_call_target(struct bt_info *bt)
 {
@@ -1239,25 +1240,6 @@ x86_64_display_full_frame(struct bt_info *bt, ulong rsp, FILE *fp)
 #define BACKTRACE_ENTRY_DISPLAYED            (3)
 #define BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED (4)
 
-struct frame_info {
-	struct list_head fi_link;
-	int fi_level; /* #i in crash 'bt'. */
-	/* #0 [ffff880100a9d780] schedule at ffffffff814eb4d2 */
-	void *fi_base;
-	ulong fi_start;
-	ulong fi_end;
-	ulong fi_text; /* saved rip */
-	struct load_module *fi_mod; /* in syment? */
-	struct syment *fi_syment;
-	ulong fi_offset; /* offset into function */
-	ulong fi_except:1;
-};
-
-static inline struct frame_info *fi_next(struct frame_info *fi)
-{
-	return list_entry(fi->fi_link.next, struct frame_info, fi_link);
-}
-
 static int
 x86_64_print_stack_entry(struct list_head *frame_list,
 			 struct bt_info *bt, FILE *fp, int level, 
@@ -1449,7 +1431,7 @@ static void x86_64_low_budget_back_trace_cmd(const struct bt_info *bt_in)
 	char *rip_symbol;
 	int level = 0;
 	bool done = false;
-	int i, framesize, estack_index;
+	int i, frame_size, estack_index;
 	LIST_HEAD(frame_list);
 
 	bt_local = *bt_in;
@@ -1464,7 +1446,7 @@ static void x86_64_low_budget_back_trace_cmd(const struct bt_info *bt_in)
 	 * we only output the register's value. So it's not necessary to check
 	 * whether it can be accessible.
 	 */
-	if (!(bt->flags & BT_USER_SPACE) && (!rsp || !accessible(rsp))) {
+	if (!(bt->flags & BT_USER_SPACE) && (rsp == 0 || !accessible(rsp))) {
 		error(INFO, "cannot determine starting stack pointer\n");
 		if (KVMDUMP_DUMPFILE())
 			kvmdump_display_regs(bt->tc->processor, fp);
@@ -1565,8 +1547,8 @@ in_exception_stack:
 						    bt, fp);
 			rsp += SIZE(pt_regs);  /* guaranteed kernel mode */
 			if (bt->eframe_ip &&
-			    ((framesize = x86_64_get_framesize(bt, bt->eframe_ip, rsp)) >= 0))
-				rsp += framesize;
+			    ((frame_size = x86_64_get_frame_size(bt, bt->eframe_ip, rsp)) >= 0))
+				rsp += frame_size;
 			level++;
 			irq_eframe = 0;
 		}
@@ -1594,10 +1576,10 @@ in_exception_stack:
 				} /* else fall through */
 	                case BACKTRACE_ENTRY_DISPLAYED:
 	                        level++;
-				if ((framesize = x86_64_get_framesize(bt, 
+				if ((frame_size = x86_64_get_frame_size(bt, 
 								      bt->eframe_ip ?  bt->eframe_ip : *up, rsp)) >= 0) {
-					rsp += framesize;
-					i += framesize / sizeof(ulong);
+					rsp += frame_size;
+					i += frame_size / sizeof(ulong);
 				}
 	                        break;
 	                case BACKTRACE_ENTRY_IGNORED:
@@ -1653,8 +1635,8 @@ in_exception_stack:
 			}
 
 			level++;
-			if ((framesize = x86_64_get_framesize(bt, bt->instptr, rsp)) >= 0)
-				rsp += framesize;
+			if ((frame_size = x86_64_get_frame_size(bt, bt->instptr, rsp)) >= 0)
+				rsp += frame_size;
 		}
 	}
 
@@ -1704,10 +1686,10 @@ in_exception_stack:
 				} /* else fall through */
 			case BACKTRACE_ENTRY_DISPLAYED:
 				level++;
-				if ((framesize = x86_64_get_framesize(bt, 
+				if ((frame_size = x86_64_get_frame_size(bt, 
 								      bt->eframe_ip ? bt->eframe_ip : *up, rsp)) >= 0) {
-					rsp += framesize;
-					i += framesize/sizeof(ulong);
+					rsp += frame_size;
+					i += frame_size/sizeof(ulong);
 				}
 				break;
 			case BACKTRACE_ENTRY_IGNORED:
@@ -1845,9 +1827,9 @@ in_exception_stack:
 				level++;
 			rsp += SIZE(pt_regs);
 			irq_eframe = 0;
-			if (bt->eframe_ip && ((framesize = x86_64_get_framesize(bt, 
+			if (bt->eframe_ip && ((frame_size = x86_64_get_frame_size(bt, 
 			    bt->eframe_ip, rsp)) >= 0))
-				rsp += framesize;
+				rsp += frame_size;
 		}
 		level++;
 	}
@@ -1888,14 +1870,8 @@ in_exception_stack:
 				 *  it must have made an indirect call, and
 				 *  can't have called our target function.
 				 */
-				if (offset) {
-					if (CRASHDEBUG(1))
-						fprintf(fp, 
-                       "< ignoring %s() -- makes indirect call and NOT %s()>\n",
-						    	spt->name, 
-						    	bt->call_target);
+				if (offset != 0)
 					continue;
-				}
 			} else if ((machdep->flags & SCHED_TEXT) &&
 				   STREQ(bt->call_target, "schedule") &&
 				   STREQ(sp->name, "__sched_text_start")) {
@@ -1905,11 +1881,6 @@ in_exception_stack:
 				 *  We got function called by the text routine,
 			 	 *  but it's not our target function.
 				 */
-				if (CRASHDEBUG(2))
-					fprintf(fp, 
- 		                "< ignoring %s() -- calls %s() and NOT %s()>\n",
-						spt->name, sp->name, 
-						bt->call_target);
 				continue;
 			}
 		}
@@ -1927,10 +1898,13 @@ in_exception_stack:
 			} /* else fall through */
 		case BACKTRACE_ENTRY_DISPLAYED:
 			level++;
-			if ((framesize = x86_64_get_framesize(bt, 
-			    bt->eframe_ip ? bt->eframe_ip : *up, rsp)) >= 0) {
-				rsp += framesize;
-				i += framesize/sizeof(ulong);
+			frame_size = x86_64_get_frame_size(bt,
+							   bt->eframe_ip ?
+							   bt->eframe_ip :
+							   *up, rsp);
+			if (frame_size >= 0) {
+				rsp += frame_size;
+				i += frame_size / sizeof(ulong);
 			}
 			break;
 		case BACKTRACE_ENTRY_IGNORED:	
