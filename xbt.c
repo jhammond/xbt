@@ -1,9 +1,12 @@
 #include <stdbool.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <malloc.h>
 #include <ftw.h>
 #include <libelf.h>
+#include <dwarf.h>
+#include <elfutils/libdw.h>
 #include <crash/defs.h>
 #include "frame_info.h"
 #include "list.h"
@@ -1934,6 +1937,7 @@ static void fprint_frame_info(FILE *file, struct frame_info *fi)
 	char *mod_path = NULL;
 	int mod_fd = -1;
 	Elf *mod_elf = NULL;
+	Dwarf *mod_dw = NULL;
 
 	fprintf(file, "### level %d, start %#016lx, end %#016lx, "
 		"size %lu, *base %#016lx, "
@@ -1982,6 +1986,7 @@ static void fprint_frame_info(FILE *file, struct frame_info *fi)
 		goto out;
 	}
 
+#if 0
 	Elf_Scn *scn = NULL;
 	Elf64_Shdr *shdr;
 	const char *scn_name;
@@ -2006,9 +2011,90 @@ static void fprint_frame_info(FILE *file, struct frame_info *fi)
 
 	Elf_Data *data = elf_getdata(scn, NULL);
 	xbt_trace("data size %zu\n", data->d_size);
+#endif
+#if 0
+	mod_dw = dwarf_begin_elf(mod_elf, DWARF_C_READ, NULL);
+#endif
+	mod_dw = dwarf_begin(mod_fd, DWARF_C_READ);
+	if (mod_dw == NULL) {
+		error(INFO, "cannot read DWARF from '%s'\n", /*...*/
+		      mod_path);
+		goto out;
+	}
 
-	/* print_infos() */
+	Dwarf_Off off = 0;
+	Dwarf_Off old_off = 0;
+	size_t hdr_size;
+	Dwarf_Off abbrev_offset;
+	uint8_t address_size;
+	uint8_t offset_size;
+
+	while (dwarf_nextcu(mod_dw, old_off = off, &off, &hdr_size, &abbrev_offset,
+			    &address_size, &offset_size) == 0) {
+		xbt_trace("New CU: off = %lu, hsize = %zu, ab = %lu, "
+			  "as = %"PRIu8", os = %"PRIu8"\n",
+			  (unsigned long) old_off, hdr_size,
+			  (unsigned long) abbrev_offset,
+			  address_size,
+			  offset_size);
+
+		Dwarf_Die cu_base, *cu_die;
+		cu_die = dwarf_offdie(mod_dw, old_off + hdr_size, &cu_base);
+		if (cu_die == NULL) {
+			/* ... */
+			continue;
+		}
+
+		if (dwarf_tag(cu_die) != DW_TAG_compile_unit) {
+			xbt_trace("not a compile unit\n");
+			continue;
+		}
+
+		Dwarf_Die die;
+		if (dwarf_child(cu_die, &die) != 0) {
+			xbt_trace("no child\n");
+			continue;
+		}
+
+		do {
+			if (dwarf_tag(&die) != DW_TAG_subprogram)
+				continue;
+
+			xbt_trace("die addr %p\n", die.addr);
+
+			Dwarf_Addr low_pc = 0, high_pc = -1;
+			dwarf_lowpc(&die, &low_pc);
+			dwarf_highpc(&die, &high_pc);
+
+			Dwarf_Attribute attr = {
+				.valp = (unsigned char *) 0x424242,
+			};
+
+			// DW_AT_name
+			if (dwarf_attr_integrate(&die, DW_AT_name, &attr) == NULL) {
+				xbt_trace("no name\n");
+			} else {
+				xbt_trace("attr code %u, form %u, valp %#016lx\n",
+					  attr.code, attr.form, (ulong)attr.valp);
+			}
+
+			xbt_trace("DIE %s, low_pc %#016lx, high_pc %#016lx\n",
+				  dwarf_diename(&die), (ulong) low_pc, (ulong) high_pc);
+
+		} while (dwarf_siblingof(&die, &die) == 0);
+
+		Dwarf_Addr low_pc = 0, high_pc = -1;
+		dwarf_lowpc(cu_die, &low_pc);
+		dwarf_highpc(cu_die, &high_pc);
+
+		xbt_trace("DIE %s, low_pc %#016lx, high_pc %#016lx\n",
+			  dwarf_diename(cu_die), (ulong) low_pc, (ulong) high_pc);
+        }
+
 out:
+	if (mod_dw != NULL)
+		dwarf_end(mod_dw);
+
 	if (mod_elf != NULL)
 		elf_end(mod_elf);
 
