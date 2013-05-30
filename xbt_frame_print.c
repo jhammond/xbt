@@ -12,7 +12,37 @@
 #include <elfutils/libdw.h>
 #include <elfutils/libdwfl.h>
 #include <assert.h>
+#include <limits.h>
 #include "xbt.h"
+
+/* Temp. Returns malloced string. */
+static char *mod_debuginfo_path(const char *mod_name) /* foo */
+{
+	const char *mod_dir_path = getenv("MODULE_PATH");
+	char ko_name[PATH_MAX]; /* foo.ko */
+	char *info_path = NULL;
+
+	int ftw_cb(const char *path, const struct stat *sb, int type)
+	{
+		if (type != FTW_F)
+			return 0;
+
+		if (strcmp(ko_name, basename(path)) == 0) {
+			info_path = strdup(path);
+			return 1;
+		}
+
+		return 0;
+	}
+
+	if (mod_dir_path == NULL)
+		return NULL;
+
+	snprintf(ko_name, sizeof(ko_name), "%s.ko", mod_name);
+	ftw(mod_dir_path, &ftw_cb, 4);
+
+	return info_path;
+}
 
 static int xbt_dwfl_module_cb(Dwfl_Module *dwflmod,
 			      void **user_data,
@@ -52,7 +82,6 @@ static int xbt_dwfl_module_cb(Dwfl_Module *dwflmod,
 			  dwfl_errmsg (-1));
 		goto out;
 	}
-	xbt_trace("dwbias %lx\n", (unsigned long) dwbias);
 
 	dies = malloc(maxdies * sizeof(dies[0]));
 	if (dies == NULL) {
@@ -73,7 +102,7 @@ next_cu:
 		  "version %"PRIu16", "
 		  "abbrev_offset %"PRIu64", "
 		  "address_size %"PRIu8", "
-		  "offset_size: %"PRIu8"",
+		  "offset_size: %"PRIu8,
 		  (uint64_t) offset, version, abbroffset, addrsize, offsize);
 
 	offset += cuhl;
@@ -100,7 +129,6 @@ next_cu:
 			cu_base = 0;
 	}
 	dwfl_module_relocate_address(dwflmod, &cu_base);
-	xbt_trace("cu_base %lx", (ulong)cu_base);
 
 	do {
 		Dwarf_Die *die;
@@ -123,7 +151,7 @@ next_cu:
 		if (tag == DW_TAG_invalid) {
 			xbt_error("cannot get tag of DIE at offset %"PRIx64
 				  " in section '%s': %s",
-				  (uint64_t) offset, scn_name, dwarf_errmsg(-1));
+				  (uint64_t)offset, scn_name, dwarf_errmsg(-1));
 			goto out;
 		}
 
@@ -159,11 +187,11 @@ next_cu:
 			if (!(low_pc <= pc && pc < high_pc))
 				goto next_die;
 
-			printf("DIE subprogram %s, offset %lx, "
-			       "pc %#lx, low_pc %#lx, high_pc %#lx",
-			       dwarf_diename(die),
-			       dwarf_dieoffset(die),
-			       (ulong) pc, (ulong)low_pc, (ulong)high_pc);
+			xbt_trace("DIE subprogram %s, offset %lx, "
+				  "pc %#lx, low_pc %#lx, high_pc %#lx",
+				  dwarf_diename(die),
+				  dwarf_dieoffset(die),
+				  (ulong) pc, (ulong)low_pc, (ulong)high_pc);
 
 		} else if (tag == DW_TAG_formal_parameter ||
 			   tag == DW_TAG_variable) {
@@ -188,11 +216,11 @@ next_cu:
 			nr_locs = dwarf_getlocation_addr(loc_attr, pc,
 							 expr, expr_len, nr_exprs);
 
-			printf("DIE %s %s, offset %lx, nr_locs %d\n",
-			       tag_name,
-			       dwarf_diename(die),
-			       dwarf_dieoffset(die),
-			       nr_locs);
+			xbt_trace("DIE %s %s, offset %lx, nr_locs %d",
+				  tag_name,
+				  dwarf_diename(die),
+				  dwarf_dieoffset(die),
+				  nr_locs);
 			// DW_AT_decl_file DW_AT_decl_line DW_AT_type
 
 			if (nr_locs < 0) {
@@ -201,29 +229,24 @@ next_cu:
 			}
 
 			for (i = 0; i < nr_locs; i++) {
-				Dwarf_Op *op = expr[i];
-				size_t len = expr_len[i];
-
-				/*
-				  size_t j;
-				  for (j = 0; j < len; j++)
-				  printf("%02hhx%s",
-				  op[j].atom, j < len - 1 ? " " : "\n");
-				*/
 				Dwarf_Word obj[512];
 				Dwarf_Word bit_mask[512];
 
-				xbt_dwarf_eval(xf, dwarf_diename(die),
-					       obj, bit_mask, sizeof(obj),
+				Dwarf_Op *op = expr[i];
+				size_t len = expr_len[i];
+
+				xbt_dwarf_eval(xf, dwarf_diename(die), obj, bit_mask, sizeof(obj),
 					       op, len);
+				/* FIXME Break on first success. */
 			}
 		} else {
 			goto next_die;
 		}
 
-		printf(" [%6"PRIx64"]  %*s%d\n",
+#if 0
+		xbt_trace(" [%6"PRIx64"]  %*s%d\n",
 		       (uint64_t) offset, (int) (level * 2), "", tag);
-
+#endif
 #if 0
 		dwarf_getattrs(&dies[level], attr_callback, NULL, 0);
 #endif
@@ -260,16 +283,23 @@ out:
 	return DWARF_CB_OK;
 }
 
-int main(int argc, char *argv[])
+/* FIXME Pass file to cb. */
+void xbt_frame_print(FILE *file, struct xbt_frame *xf)
 {
 	char *mod_path = NULL;
 	int mod_fd = -1;
-	unsigned long text;
-	unsigned long addr;
+	Dwfl *dwfl = NULL;
+	int dwfl_fd = -1;
 
-	mod_path = argv[1];
-	text = strtoul(argv[2], NULL, 0);
-	addr = strtoul(argv[3], NULL, 0);
+	if (xf->xf_mod_name == NULL)
+		goto out;
+
+	mod_path = xf->xf_mod_debuginfo_path = mod_debuginfo_path(xf->xf_mod_name);
+	if (mod_path == NULL) {
+		xbt_error("cannot find debuginfo for module '%s'",
+			  xf->xf_mod_name);
+		goto out;
+	}
 
 	mod_fd = open(mod_path, O_RDONLY);
 	if (mod_fd < 0) {
@@ -284,9 +314,11 @@ int main(int argc, char *argv[])
 		/* .find_debuginfo = find_no_debuginfo, */
 	};
 
-	Dwfl *dwfl = dwfl_begin(&dwfl_callbacks);
+	dwfl = dwfl_begin(&dwfl_callbacks);
+	if (dwfl == NULL)
+		goto out;
 
-	int dwfl_fd = dup(mod_fd);
+	dwfl_fd = dup(mod_fd);
 	if (dwfl_fd < 0) {
 		xbt_error("cannot dup fd %d for %s: %s",
 			  mod_fd, mod_path, strerror(errno));
@@ -297,20 +329,21 @@ int main(int argc, char *argv[])
 		xbt_error("cannot load DWARF from '%s': %s",
 			  mod_path, strerror(errno)); /* XXX errno */
 		close(dwfl_fd);
+		dwfl_fd = -1;
 		goto out;
 	}
+	dwfl_fd = -1;
+
+	/* FIXME Cleanup. */
 
 	dwfl_report_end(dwfl, NULL, NULL);
 
-	struct xbt_frame xf = {
-		.xf_mod_debuginfo_path = mod_path,
-		.xf_func_name = "FIXME",
-		.xf_func_offset = addr - text,
-	};
-
-	dwfl_getmodules(dwfl, xbt_dwfl_module_cb, &xf, 0 /* offset*/);
+	dwfl_getmodules(dwfl, xbt_dwfl_module_cb, xf, 0 /* offset*/);
 	/* ... */
-	dwfl_end(dwfl);
 out:
-	return 0;
+	if (!(dwfl_fd < 0))
+		close(dwfl_fd);
+
+	if (dwfl != NULL)
+		dwfl_end(dwfl);
 }

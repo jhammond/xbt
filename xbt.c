@@ -4,51 +4,13 @@
 #include <string.h>
 #include <malloc.h>
 #include <ftw.h>
-//#include <libelf.h>
-//#include <dwarf.h>
-//#include <elfutils/libdw.h>
+#ifndef CRASHDEBUG
 #include <crash/defs.h>
+#endif
 #include "xbt.h"
 #include "list.h"
 
-/* FIXME */
-#undef xbt_trace
-#undef xbt_error
-
-#define xbt_trace(fmt, args...)					\
-	error(INFO, "@ %s:%d: "fmt, __func__, __LINE__, ##args)
-
-#define xbt_error(fmt, args...)					\
-	error(INFO, "@ %s:%d: "fmt, __func__, __LINE__, ##args)
-
-/* Temp. Returns malloced string. */
-static char *module_debuginfo_path(struct load_module *lm)
-{
-	const char *mod_dir_path = getenv("MODULE_PATH");
-	char mod_name[PATH_MAX]; /* foo.ko */
-	char *info_path = NULL;
-
-	int ftw_cb(const char *path, const struct stat *sb, int type)
-	{
-		if (type != FTW_F)
-			return 0;
-
-		if (strcmp(mod_name, basename(path)) == 0) {
-			info_path = strdup(path);
-			return 1;
-		}
-
-		return 0;
-	}
-
-	if (mod_dir_path == NULL)
-		return NULL;
-
-	snprintf(mod_name, sizeof(mod_name), "%s.ko", lm->mod_name);
-	ftw(mod_dir_path, &ftw_cb, 4);
-
-	return info_path;
-}
+FILE *xbt_file;
 
 /* BEGIN copy from crash-7.0.0/x86_64.c */
 
@@ -1372,6 +1334,8 @@ static int xbt_add_frame(struct list_head *xf_list,
 		fprintf(fp, " [%s]", lm->mod_name);
 		xf->xf_mod = lm;
 		xf->xf_mod_name = lm->mod_name;
+		xf->xf_text_section = lm->mod_text_start;
+		xf->xf_text_offset = xf->xf_rip -  xf->xf_text_section;
 	}
 
 	if (bt->flags & BT_FRAMESIZE_DISABLE)
@@ -1402,10 +1366,11 @@ static int xbt_add_frame(struct list_head *xf_list,
 		bt->flags &= ~(ulonglong)BT_CHECK_CALLER;
 	}
 
-	/* This or use original. */
+	/* This or use original. (Now I wonder what I meant by that.) */
 	/* FIXME More init. */
 	xf->xf_func_name = func_name;
-
+	xf->xf_func_start = xf->xf_syment->value;
+	xf->xf_func_offset = xf->xf_rip - xf->xf_func_start;
 out:
 	/* FIXME Cleanup. */
 
@@ -1949,178 +1914,139 @@ in_exception_stack:
 }
 /* END copy of from crash... */
 
-static void xbt_frame_print(FILE *file, struct xbt_frame *xf)
+static int xbt_crash_mem_ref(struct xbt_frame *xf, void *dest,
+			     unsigned long addr, size_t size)
 {
-#if 0
-	char *mod_path = NULL;
-	int mod_fd = -1;
-	Elf *mod_elf = NULL;
-	Dwarf *mod_dw = NULL;
+	int rc;
 
-	fprintf(file, "### level %d, start %#016lx, end %#016lx, "
-		"size %lu, *base %#016lx, "
-		"text %#016lx, name %s, mod %s\n",
-		fi->fi_level, fi->fi_start, fi->fi_end,
-		fi->fi_end - fi->fi_start,
-		*(ulong *)fi->fi_base,
-		fi->fi_text,
-		fi->fi_syment != NULL ? fi->fi_syment->name : "NONE",
-		fi->fi_mod != NULL ? fi->fi_mod->mod_name : "NONE");
+	if (readmem(addr, KVADDR, dest, size, "xbt_crash_mem_ref",
+		    QUIET|RETURN_ON_ERROR))
+		rc = 0;
+	else
+		rc = -XBT_BAD_MEM;
 
-	if (fi->fi_mod == NULL)
-		goto out;
+	xbt_trace("addr %lx, size %zu, rc %d", addr, size, rc);
 
-	mod_path = module_debuginfo_path(fi->fi_mod);
-	if (mod_path == NULL) {
-		/* ... */
-		goto out;
-	}
+	return rc;
+}
 
-	mod_fd = open(mod_path, O_RDONLY);
-	if (mod_fd < 0) {
-		/* INFO? */
-		error(INFO, "cannot open '%s': %s\n",
-		      mod_path, strerror(errno));
-		goto out;
-	}
+void xbt_restore_parent_regs(struct xbt_frame *xp, struct xbt_frame *xc)
+{
+	unsigned long start;
+	unsigned char prolog[64];
+	long rsp_off;
+	int i;
 
-	if (elf_version(EV_CURRENT) == EV_NONE) {
-		/* FATAL? */
-		error(INFO, "cannot set libelf version: %s\n",
-		      elf_errmsg(elf_errno()));
-		goto out;
-	}
+	start = xc->xf_func_start;
+	if (start == 0)
+		return;
 
-	mod_elf = elf_begin(mod_fd, ELF_C_READ, NULL);
-	if (mod_elf == NULL) {
-		error(INFO, "error reading ELF file '%s': %s\n",
-		      mod_path, elf_errmsg(elf_errno()));
-		goto out;
-	}
+	if (!readmem(start, KVADDR, prolog, sizeof(prolog), "prolog",
+		     QUIET|RETURN_ON_ERROR))
+		return;
 
-	Elf64_Ehdr *ehdr = elf64_getehdr(mod_elf);
-	if (ehdr == NULL) {
-		/* ... */
-		goto out;
-	}
+	i = 0;
+	if (!(prolog[i++] == 0x55 && /* push %rbp */
+	      prolog[i++] == 0x48 && /* mov %rsp,%rbp */
+	      prolog[i++] == 0x89 &&
+	      prolog[i++] == 0xe5))
+		return;
 
-#if 0
-	Elf_Scn *scn = NULL;
-	Elf64_Shdr *shdr;
-	const char *scn_name;
+	rsp_off = - sizeof(unsigned long);
 
-	while (1) {
-		scn = elf_nextscn(mod_elf, scn);
-		if (scn == NULL) {
-			error(INFO, "ELF file '%s' contains no '.debug_info' section\n",
-			      mod_path);
-			goto out;
-		}
+	/* Semibackwards nonportable prolog disassembler. */
+	while (i + 8 < sizeof(prolog)) {
+		long off = LONG_MIN;
+		unsigned int ri;
+		unsigned char o1, o2, o3;
 
-		shdr = elf64_getshdr(scn);
-		scn_name = elf_strptr(mod_elf, ehdr->e_shstrndx, shdr->sh_name);
+		switch (prolog[i++]) {
+		case 0x41: /* push %r12-%r15 */
+			o1 = prolog[i++];
+			if (!(0x54 <= o1 && o1 < 0x58))
+				return;
 
-		if (strcmp(scn_name, ".debug_info") == 0)
+			ri = (o1 - 0x54) + XBT_R12;
 			break;
-	}
 
-	xbt_trace("found %s %s, offset %u, size %u\n",
-		  mod_path, scn_name, shdr->sh_offset, shdr->sh_size);
+		case 0x48: 
+			o1 = prolog[i++];
+			o2 = prolog[i++];
+			o3 = prolog[i++];
 
-	Elf_Data *data = elf_getdata(scn, NULL);
-	xbt_trace("data size %zu\n", data->d_size);
-#endif
-#if 0
-	mod_dw = dwarf_begin_elf(mod_elf, DWARF_C_READ, NULL);
-#endif
-	mod_dw = dwarf_begin(mod_fd, DWARF_C_READ);
-	if (mod_dw == NULL) {
-		error(INFO, "cannot read DWARF from '%s'\n", /*...*/
-		      mod_path);
-		goto out;
-	}
-
-	Dwarf_Off off = 0;
-	Dwarf_Off old_off = 0;
-	size_t hdr_size;
-	Dwarf_Off abbrev_offset;
-	uint8_t address_size;
-	uint8_t offset_size;
-
-	while (dwarf_nextcu(mod_dw, old_off = off, &off, &hdr_size, &abbrev_offset,
-			    &address_size, &offset_size) == 0) {
-		xbt_trace("New CU: off = %lu, hsize = %zu, ab = %lu, "
-			  "as = %"PRIu8", os = %"PRIu8"\n",
-			  (unsigned long) old_off, hdr_size,
-			  (unsigned long) abbrev_offset,
-			  address_size,
-			  offset_size);
-
-		Dwarf_Die cu_base, *cu_die;
-		cu_die = dwarf_offdie(mod_dw, old_off + hdr_size, &cu_base);
-		if (cu_die == NULL) {
-			/* ... */
-			continue;
-		}
-
-		if (dwarf_tag(cu_die) != DW_TAG_compile_unit) {
-			xbt_trace("not a compile unit\n");
-			continue;
-		}
-
-		Dwarf_Die die;
-		if (dwarf_child(cu_die, &die) != 0) {
-			xbt_trace("no child\n");
-			continue;
-		}
-
-		do {
-			if (dwarf_tag(&die) != DW_TAG_subprogram)
-				continue;
-
-			xbt_trace("die addr %p\n", die.addr);
-
-			Dwarf_Addr low_pc = 0, high_pc = -1;
-			dwarf_lowpc(&die, &low_pc);
-			dwarf_highpc(&die, &high_pc);
-
-			Dwarf_Attribute attr = {
-				.valp = (unsigned char *) 0x424242,
-			};
-
-			// DW_AT_name
-			if (dwarf_attr_integrate(&die, DW_AT_name, &attr) == NULL) {
-				xbt_trace("no name\n");
-			} else {
-				xbt_trace("attr code %u, form %u, valp %#016lx\n",
-					  attr.code, attr.form, (ulong)attr.valp);
+			if (o1 == 0x81 && o2 == 0xec) {
+				// FIXME sub o3..o6,%rsp
+				return;
 			}
 
-			xbt_trace("DIE %s, low_pc %#016lx, high_pc %#016lx\n",
-				  dwarf_diename(&die), (ulong) low_pc, (ulong) high_pc);
+ 			if (o1 == 0x83 && o2 == 0xec) {
+				// sub o3,%rsp
+				rsp_off -= (signed char)o3;
+				continue;
+			}
 
-		} while (dwarf_siblingof(&die, &die) == 0);
+			if (o1 == 0x89 && o2 == 0x5d) {
+				// 48 89 5d e8 mov %rbx,-0x18(%rbp)
+				ri = XBT_RBX;
+				off = (signed char)o3;
+				break;
+			}
+			return;
 
-		Dwarf_Addr low_pc = 0, high_pc = -1;
-		dwarf_lowpc(cu_die, &low_pc);
-		dwarf_highpc(cu_die, &high_pc);
+		case 0x4c:			
+			o1 = prolog[i++];
+			o2 = prolog[i++];
+			o3 = prolog[i++];
 
-		xbt_trace("DIE %s, low_pc %#016lx, high_pc %#016lx\n",
-			  dwarf_diename(cu_die), (ulong) low_pc, (ulong) high_pc);
-        }
+			// 4c 89 65 e8 mov %r12,-0x18(%rbp)
+			// 4c 89 6d f0 mov %r13,-0x10(%rbp)
+			// 4c 89 75 f8 mov %r14,-0x8(%rbp)
+			// 4c 89 7d f8 mov %r15,-0x8(%rbp)
 
-out:
-	if (mod_dw != NULL)
-		dwarf_end(mod_dw);
+			// 4c 89 64 24 08 mov %r12,0x8(%rsp)
+			// 4c 89 6c 24 10 mov %r13,0x10(%rsp)
+			// 4c 89 74 24 18 mov %r14,0x18(%rsp)
 
-	if (mod_elf != NULL)
-		elf_end(mod_elf);
+			if (o1 != 0x89)
+				return;
 
-	if (!(mod_fd < 0))
-		close(mod_fd);
+			if ((o2 & 0xfe) == 0x64)
+				ri = XBT_R12;
+			else if ((o2 & 0xfe) == 0x6c)
+				ri = XBT_R13;
+			else if ((o2 & 0xfe) == 0x74)
+				ri = XBT_R14;
+			else if ((o2 & 0xfe) == 0x7c)
+				ri = XBT_R15;
+			else
+				return;
 
-	free(mod_path);
-#endif
+			if (o2 & 0x01)
+				off = (signed char)o3;
+			else if (o3 == 0x24)
+				off = rsp_off + (signed char)prolog[i++];
+			else
+				return;
+			break;
+
+		case 0x53:
+			// push %rbx
+			ri = XBT_RBX;
+			break;
+		default:
+			return;
+		}
+
+		if (off == LONG_MIN) {
+			off = rsp_off;
+			rsp_off -= sizeof(unsigned long);
+		}
+
+		if (xf_frame_ref(xp, &xp->xf_reg[ri], off) < 0)
+			return;
+
+		xp->xf_reg_mask |= (1UL << ri);
+	}
 }
 
 void xbt_func(void)
@@ -2138,25 +2064,27 @@ void xbt_func(void)
 	char *rip_sym;
 	LIST_HEAD(xf_list);
 
-	xbt_trace("stack %#016lx %#016lx\n", bt->stackbase, bt->stacktop);
+	xbt_file = fp;
+
+	xbt_trace("stack start %#016lx, end %#016lx", bt->stackbase, bt->stacktop);
 
 	fill_stackbuf(bt);
 	machdep->get_stack_frame(bt, &bt->instptr, &bt->stkptr);
-	xbt_trace("rip %#016lx, rsp %#016lx\n",  bt->instptr, bt->stkptr);
+	xbt_trace("rip %#016lx, rsp %#016lx",  bt->instptr, bt->stkptr);
 
 	rsp = bt->stkptr;
 	if (rsp == 0 || !accessible(rsp)) {
 		error(INFO, "cannot access memory at rsp %#016lx\n", rsp);
-		return;
+		goto out;
 	}
 
 	if (!INSTACK(rsp, bt)) {
 		error(INFO, "rsp %#016lx not in stack\n", rsp);
-		return;
+		goto out;
 	}
 
 	rip_sym = closest_symbol(bt->instptr);
-	xbt_trace("rip_sym %s\n", rip_sym);
+	xbt_trace("rip_sym %s", rip_sym);
 
 	xbt_back_trace_to_xf_list(bt, &xf_list);
 
@@ -2164,32 +2092,51 @@ void xbt_func(void)
 
 	struct xbt_frame *xf;
 	list_for_each_entry(xf, &xf_list, xf_link) {
-		if (xf->xf_link.next != &xf_list)
+		if (xf->xf_link.next != &xf_list) {
 			xf->xf_frame_end = xf_next(xf)->xf_frame_start;
-		else
+		} else {
 			xf->xf_frame_end = xf->xf_frame_start;
+		}
 
-		/* Wrong. */
 		xf->xf_frame_base = &bt->stackbuf[xf->xf_frame_end -
 						  bt->stackbase -
 						  sizeof(ulong)];
+
+		xf->xf_stack_base = bt->stackbuf;
+		xf->xf_stack_start = bt->stackbase;
+		xf->xf_stack_end = bt->stacktop;
+		xf->xf_mem_ref = &xbt_crash_mem_ref;
+
 		/* FIXME More init. */
-		/* xf_text_offset */
-
-		xbt_trace("level %d, "
-			  "frame_start %#016lx, "
-			  "frame_end %#016lx, "
-			  "size %lu, *base %#016lx, "
-			  "RIP %#016lx, name %s, mod %s\n",
-			  xf->xf_level, xf->xf_frame_start, xf->xf_frame_end,
-			  xf->xf_frame_end - xf->xf_frame_start,
-			  *(ulong *)xf->xf_frame_base,
-			  xf->xf_rip,
-			  xf->xf_func_name != NULL ? xf->xf_func_name : "NONE",
-			  xf->xf_mod_name != NULL ? xf->xf_mod_name : "NONE");
-
-		xbt_frame_print(fp, xf);
 	}
+
+	list_for_each_entry(xf, &xf_list, xf_link)
+		// TODO Need xf_has_parent(), xf_parent(). */
+		if (xf->xf_link.next != &xf_list)
+			xbt_restore_parent_regs(xf_next(xf), xf);
+
+	list_for_each_entry(xf, &xf_list, xf_link) {
+		xbt_trace("level %d\n"
+			  "###\tmod %s, name %s, RIP %#016lx\n"
+			  "###\tframe start %#016lx, end %#016lx, size %lu, *base %#016lx",
+			  // "###\tstack start %#016lx, end %#016lx, size %lu, *base %#016lx\n",
+			  xf->xf_level,
+			  xf->xf_mod_name != NULL ? xf->xf_mod_name : "NONE",
+			  xf->xf_func_name != NULL ? xf->xf_func_name : "NONE",
+			  xf->xf_rip,
+			  xf->xf_frame_start, xf->xf_frame_end,
+			  xf->xf_frame_end - xf->xf_frame_start,
+			  *(ulong *)xf->xf_frame_base
+			  // xf->xf_stack_start, xf->xf_stack_end,
+			  // xf->xf_stack_end - xf->xf_stack_start,
+			  // *(ulong *)xf->xf_stack_base
+			);
+
+		if (xf->xf_frame_start != xf->xf_frame_end)
+			xbt_frame_print(fp, xf);
+	}
+out:
+	xbt_file = NULL;
 }
 
 void xmod_func(void)
@@ -2213,12 +2160,13 @@ void xmod_func(void)
 			fprintf(fp, "# name=%s, offset=%#016lx, size=%#016lx\n",
 				md->name, md->offset, md->size);
 		}
-
+#if 0
 		char *info_path = module_debuginfo_path(lm);
 		if (info_path != NULL)
 			fprintf(fp, "# %s\n", info_path);
-
 		free(info_path);
+#endif
+
 	}
 
 /*

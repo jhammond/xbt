@@ -10,12 +10,30 @@
 #define XBT_ARRAY_LENGTH(a) (sizeof(a) / sizeof((a)[0]))
 
 #define xbt_trace(fmt, args...) \
-	fprintf(stderr, "@ %s:%d: "fmt"\n", __func__, __LINE__, ##args)
+	fprintf(stderr, "### %s:%d: "fmt"\n", __func__, __LINE__, ##args)
 
 #define xbt_error(fmt, args...) \
-	fprintf(stderr, "@ %s:%d: "fmt"\n", __func__, __LINE__, ##args)
+	fprintf(stderr, "### %s:%d: "fmt"\n", __func__, __LINE__, ##args)
 
 #define xbt_assert(x) (assert(x))
+
+#if 0
+/* FIXME */
+#ifndef CRASHDEBUG
+#include <crash/defs.h>
+#endif
+
+extern FILE *xbt_file;
+
+#undef xbt_trace
+#undef xbt_error
+
+#define xbt_trace(fmt, args...)					\
+	__error(INFO, "### %s:%d: "fmt"\n", __func__, __LINE__, ##args)
+
+#define xbt_error(fmt, args...)					\
+	__error(INFO, "### %s:%d: "fmt"\n", __func__, __LINE__, ##args)
+#endif
 
 #define XBT_NR_REGS 16
 
@@ -34,6 +52,14 @@ enum {
 	XBT_EVAL_OVERFLOW,
 };
 
+enum {
+	XBT_RBX = 3,
+	XBT_R12 = 12,
+	XBT_R13 = 13,
+	XBT_R14 = 14,
+	XBT_R15 = 15,
+};
+
 static inline const char *xbt_strerror(int err)
 {
 	return "XBT error";
@@ -43,23 +69,25 @@ struct load_module;
 struct syment;
 
 struct xbt_frame {
-	/* Stack and frame data. */
+	/* Frame data. */
 	struct list_head	xf_link;
 	int			xf_level; /* #i in crash 'bt'. */
-	const void	       *xf_stack_base; /* Copy of stack in our memory. */
-	unsigned long		xf_stack_start;
-	unsigned long		xf_stack_end;
 	const void	       *xf_frame_base; /* Copy of frame in our memory. */
 	unsigned long		xf_frame_start;
 	unsigned long		xf_frame_end;
 	unsigned long		xf_rip; /* saved rip */
-
 	unsigned long		xf_reg[XBT_NR_REGS];
 	unsigned long		xf_reg_mask;
+
+	/* Stack data. */
+	const void	       *xf_stack_base; /* Copy of stack in our memory. */
+	unsigned long		xf_stack_start;
+	unsigned long		xf_stack_end;
 
 	/* Function data. */
 	struct syment	       *xf_syment;
 	const char	       *xf_func_name;
+	unsigned long		xf_func_start;
 	unsigned long		xf_func_offset;
 	unsigned long		xf_text_section;
 	unsigned long		xf_text_offset;
@@ -67,7 +95,7 @@ struct xbt_frame {
 	/* Module data. */
 	struct load_module     *xf_mod;
 	const char	       *xf_mod_name;
-	const char	       *xf_mod_debuginfo_path;
+	char		       *xf_mod_debuginfo_path;
 
 	unsigned long		xf_is_exception:1,
 				xf_is_irq:1;
@@ -111,31 +139,42 @@ static inline int xf_frame_ref(struct xbt_frame *xf,
 			       unsigned long *v,
 			       long offset)
 {
+	unsigned long addr = xf->xf_frame_end + offset;
+	unsigned long stack_offset;
+
+	xbt_trace("offset %ld, addr %lx", offset, addr);
+
 	if (xf->xf_frame_ref != NULL)
 		return xf->xf_frame_ref(xf, v, offset);
 
-	if (!(offset < xf->xf_frame_end - xf->xf_frame_start)) {
+	if (!(xf->xf_stack_start <= addr && addr < xf->xf_stack_end)) {
 		/* ... */
 		return -XBT_BAD_FRAME;
 	}
 
-	*v = *(const unsigned long *)
-		(((const char *)xf->xf_frame_base) + offset);
+	stack_offset = addr - xf->xf_stack_start;
+
+	*v = *(unsigned long *)
+		(((char *)xf->xf_stack_base) + stack_offset);
+
+	xbt_trace("*v %lx", *v);
 
 	return 0;
 }
 
 static inline int xf_mem_ref(struct xbt_frame *xf,
-			     void *buf, unsigned long addr,
+			     void *dest, unsigned long addr,
 			     size_t size)
 {
 	if (xf->xf_mem_ref != NULL)
-		return xf->xf_mem_ref(xf, buf, addr, size);
+		return xf->xf_mem_ref(xf, dest, addr, size);
 
 	return -XBT_UNSUPP;
 }
 
-int xbt_dwarf_eval(struct xbt_frame *xf,
+void xbt_frame_print(FILE *file, struct xbt_frame *xf);
+
+int xbt_dwarf_eval(struct xbt_frame *xf, const char *obj_name,
 		   Dwarf_Word *obj, Dwarf_Word *bit_mask, size_t obj_size,
 		   const Dwarf_Op *expr, size_t expr_len);
 

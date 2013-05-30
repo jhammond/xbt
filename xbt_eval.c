@@ -16,7 +16,8 @@
 
 static bool xbt_eval_abort_on_error = false;
 
-int xbt_dwarf_eval(struct xbt_context *xc,
+int xbt_dwarf_eval(struct xbt_frame *xf,
+		   const char *obj_name,
 		   Dwarf_Word *obj, Dwarf_Word *bit_mask, size_t obj_size,
 		   const Dwarf_Op *expr, size_t expr_len)
 {
@@ -24,7 +25,6 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 	size_t K = 0;
 	size_t bit_off = 0;
 	bool is_value = false;
-	const char *name = "XXX";
 	int rc;
 
 	memset(obj, 0, obj_size);
@@ -36,7 +36,8 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 		assert(_err <= 0);					\
 		if (xbt_eval_abort_on_error && _err != 0)		\
 			abort();					\
-		rc = -_err;						\
+		rc = _err;						\
+		xbt_error("OUT obj %s, K %zu, rc %d", obj_name, K, rc);	\
 		goto out;						\
 	} while (0)
 
@@ -52,7 +53,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 	do {								\
 		Dwarf_Word _w;						\
 									\
-		REQ(K < ARRAY_LENGTH(E) - 1, -XBT_EVAL_OVERFLOW);	\
+		REQ(K < XBT_ARRAY_LENGTH(E) - 1, -XBT_EVAL_OVERFLOW);	\
 		is_value = false;					\
 		_w = (w);						\
 		E[K++] = _w;						\
@@ -83,31 +84,36 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 		_s = (size);						\
 		REQ(_s <= sizeof(_m), -XBT_EVAL_BAD_OP);		\
 									\
-		_rc = xc_mem_ref(xc, &_m, (addr), _s);			\
+		_rc = xf_mem_ref(xf, &_m, (addr), _s);			\
 		if (_rc != 0)						\
 			OUT(_rc);					\
 									\
 		_m;							\
 	})
 
+#if 0
 #define FBREG_REF(off)							\
 	({								\
 		unsigned long _w;					\
 		int _rc;						\
 									\
-		_rc = xc_frame_ref(xc, &_w, (off));			\
+		_rc = xf_frame_ref(xf, &_w, (off));			\
 		if (_rc != 0)						\
 			OUT(_rc);					\
 									\
 		_w;							\
 	})
+#endif
+
+#define FBREG_REF(off)							\
+	((off) + xf->xf_frame_end)
 
 #define BREG_REF(reg, off)						\
 	({								\
 		unsigned long _r;					\
 		int _rc;						\
 									\
-		_rc = xc_reg_ref(xc, &_r, (reg));			\
+		_rc = xf_reg_ref(xf, &_r, (reg));			\
 		if (_rc != 0)						\
 			OUT(_rc);					\
 									\
@@ -119,7 +125,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 		unsigned long _r;					\
 		int _rc;						\
 									\
-		_rc = xc_reg_ref(xc, &_r, (reg));			\
+		_rc = xf_reg_ref(xf, &_r, (reg));			\
 		if (_rc != 0)						\
 			OUT(_rc);					\
 									\
@@ -254,7 +260,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 			 * address space identifier. */
 			OUT(-XBT_EVAL_UNSUPP); /* Not emitted AFAIK. */
 		case DW_OP_xderef_size:
-			/* Same as xderef excpet that n0 is the value size. */
+			/* Same as xderef exfpet that n0 is the value size. */
 			OUT(-XBT_EVAL_UNSUPP); /* Not emitted AFAIK. */
 		case DW_OP_push_object_address:
 			/* For 'this'? */
@@ -550,7 +556,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 			if (IS_EMPTY()) {
 				/* Empty location. */
 				xbt_trace("%s[%zu, %zu) location = NONE, value = NONE",
-					  name, bit_off, bit_off + 8 * n0);
+					  obj_name, bit_off, bit_off + 8 * n0);
 			} else if (is_value) {
 				/* Virtual location. */
 				/* TODO Save reg/literal name. */
@@ -559,26 +565,26 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 				have_value = true;
 
 				xbt_trace("%s[%zu, %zu) location = NONE",
-					  name, bit_off, bit_off + 8 * n0);
+					  obj_name, bit_off, bit_off + 8 * n0);
 			} else {
 				/* Real location. */
 				int mem_rc;
 
 				t0 = POP();
-				xbt_trace("%s[%zu, %zu) locaction = %lx",
-					  name, bit_off, bit_off + 8 * n0, t0);
+				xbt_trace("%s[%zu, %zu) location = %lx",
+					  obj_name, bit_off, bit_off + 8 * n0, t0);
 
-				mem_rc = xc_mem_ref(xc, &v0, t0, n0);
+				mem_rc = xf_mem_ref(xf, &v0, t0, n0);
 				if (mem_rc != 0)
 					xbt_trace("%s[%zu, %zu) cannot access %lx: rc = %d",
-						  name, bit_off, bit_off + 8 * n0, t0, mem_rc);
+						  obj_name, bit_off, bit_off + 8 * n0, t0, mem_rc);
 				else
 					have_value = true;
 			}
 
 			if (have_value) {
 				xbt_trace("%s[%zu, %zu) value = %lx",
-					  name, bit_off, bit_off + 8 * n0, v0);
+					  obj_name, bit_off, bit_off + 8 * n0, v0);
 
 				memcpy(obj + bit_off / 8, &v0, n0);
 				memset(bit_mask + bit_off / 8, 0xff, n0);
@@ -613,21 +619,23 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 
 		t0 = POP();
 		memcpy(obj, &t0, obj_size);
-		xbt_trace("%s value = %lx\n", name, t0);
+		xbt_trace("%s value = %lx", obj_name, t0);
 	} else {
 		Dwarf_Word t0, v0;
 		int mem_rc;
 
 		t0 = POP();
-		xbt_trace("%s location = %lx\n", name, t0);
+		xbt_trace("%s location = %lx", obj_name, t0);
 
-		mem_rc = xc_mem_ref(xc, &v0, t0, obj_size);
+		mem_rc = xf_mem_ref(xf, &v0, t0, sizeof(v0));
 		if (mem_rc != 0) {
 			xbt_trace("%s cannot access %lx: rc = %d",
-				  name, t0, mem_rc);
+				  obj_name, t0, mem_rc);
 		} else {
-			memcpy(obj, &v0, obj_size);
-			xbt_trace("%s value = %lx\n", name, v0);
+			/* FIXME */
+			memcpy(obj, &v0, obj_size < sizeof(v0) ?
+			       obj_size : sizeof(v0));
+			xbt_trace("%s value = %lx", obj_name, v0);
 		}
 	}
 	OUT(XBT_OK);
