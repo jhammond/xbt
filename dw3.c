@@ -18,9 +18,9 @@ static int xbt_dwfl_module_cb(Dwfl_Module *dwflmod,
 			      void **user_data,
 			      const char *name,
 			      Dwarf_Addr base,
-			      void *arg)
+			      void *pxf)
 {
-	struct xbt_context *xc = arg;
+	struct xbt_frame *xf = pxf;
 	const char *scn_name = ".debug_info";
 
 	int maxdies = 20;
@@ -38,8 +38,8 @@ static int xbt_dwfl_module_cb(Dwfl_Module *dwflmod,
 	Dwarf_Addr dwbias;
 	Dwarf_Die *dies = NULL;
 
-	Dwarf_Addr text_offset = xc->xc_text_offset;
-	const char *path = xc->xc_module_debuginfo_path;
+	Dwarf_Addr text_offset = xf->xf_text_offset;
+	const char *path = xf->xf_mod_debuginfo_path;
 	Dwarf_Addr pc;
 
 	int rc = -1;
@@ -213,7 +213,7 @@ next_cu:
 				Dwarf_Word obj[512];
 				Dwarf_Word bit_mask[512];
 
-				xbt_dwarf_eval(xc, obj, bit_mask, sizeof(obj),
+				xbt_dwarf_eval(xf, obj, bit_mask, sizeof(obj),
 					       op, len);
 			}
 		} else {
@@ -287,7 +287,7 @@ int main(int argc, char *argv[])
 
 	int dwfl_fd = dup(mod_fd);
 	if (dwfl_fd < 0) {
-		xbt_error("cannot dup fd %d: %s",
+		xbt_error("cannot dup fd %d for %s: %s",
 			  mod_fd, mod_path, strerror(errno));
 		goto out;
 	}
@@ -301,12 +301,13 @@ int main(int argc, char *argv[])
 
 	dwfl_report_end(dwfl, NULL, NULL);
 
-	struct xbt_context xc = {
-		.xc_module_debuginfo_path = mod_path,
-		.xc_text_offset = addr - text,
+	struct xbt_frame xf = {
+		.xf_mod_debuginfo_path = mod_path,
+		.xf_func_name = "FIXME",
+		.xf_func_offset = addr - text,
 	};
 
-	dwfl_getmodules(dwfl, xbt_dwfl_module_cb, &xc, 0 /* offset*/);
+	dwfl_getmodules(dwfl, xbt_dwfl_module_cb, &xf, 0 /* offset*/);
 	/* ... */
 	dwfl_end(dwfl);
 out:

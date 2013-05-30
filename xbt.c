@@ -4,12 +4,22 @@
 #include <string.h>
 #include <malloc.h>
 #include <ftw.h>
-#include <libelf.h>
-#include <dwarf.h>
-#include <elfutils/libdw.h>
+//#include <libelf.h>
+//#include <dwarf.h>
+//#include <elfutils/libdw.h>
 #include <crash/defs.h>
-#include "frame_info.h"
+#include "xbt.h"
 #include "list.h"
+
+/* FIXME */
+#undef xbt_trace
+#undef xbt_error
+
+#define xbt_trace(fmt, args...)					\
+	error(INFO, "@ %s:%d: "fmt, __func__, __LINE__, ##args)
+
+#define xbt_error(fmt, args...)					\
+	error(INFO, "@ %s:%d: "fmt, __func__, __LINE__, ##args)
 
 /* Temp. Returns malloced string. */
 static char *module_debuginfo_path(struct load_module *lm)
@@ -1240,29 +1250,29 @@ x86_64_display_full_frame(struct bt_info *bt, ulong rsp, FILE *fp)
 #define BACKTRACE_ENTRY_DISPLAYED            (3)
 #define BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED (4)
 
-static int
-x86_64_print_stack_entry(struct list_head *frame_list,
+/* Was x86_64_print_stack_entry() */
+static int xbt_add_frame(struct list_head *xf_list,
 			 struct bt_info *bt, FILE *fp, int level, 
 			 int stkindex, ulong text)
 {
 	ulong rsp, offset, locking_func;
 	struct syment *sp, *spl;
-	char *name;
+	char *func_name;
 	long eframe_check;
 	struct load_module *lm;
-	struct frame_info *fi;
+	struct xbt_frame *xf;
 	int i; 
 	int rc;
 
-	fi = malloc(sizeof(*fi));
-	if (fi == NULL) {
+	xf = malloc(sizeof(*xf));
+	if (xf == NULL) {
 		goto out;
 		rc = -ENOMEM;
 	}
-	memset(fi, 0, sizeof(*fi));
-	INIT_LIST_HEAD(&fi->fi_link);
-	fi->fi_level = level;
-	fi->fi_text = text;
+	memset(xf, 0, sizeof(*xf));
+	INIT_LIST_HEAD(&xf->xf_link);
+	xf->xf_level = level;
+	xf->xf_rip = text;
 
 	eframe_check = -1;
 	if (!(bt->flags & BT_SAVE_EFRAME_IP))
@@ -1274,23 +1284,25 @@ x86_64_print_stack_entry(struct list_head *frame_list,
 		rc = BACKTRACE_ENTRY_IGNORED;
 		goto out;
 	}
-	name = sp->name;
 
-	fi->fi_syment = sp;
-	fi->fi_offset = offset;
+	func_name = sp->name;
+
+	xf->xf_syment = sp;
+	xf->xf_func_offset = offset;
+
 	if (bt->flags & BT_EXCEPTION_FRAME)
-		fi->fi_except = 1;
+		xf->xf_is_exception = 1;
 
 	if (offset == 0 &&
 	    !(bt->flags & BT_EXCEPTION_FRAME) &&
 	    !(bt->flags & BT_START)) { 
-		if (STREQ(name, "child_rip")) {
+		if (STREQ(func_name, "child_rip")) {
 			if (symbol_exists("kernel_thread"))
-				name = "kernel_thread";
+				func_name = "kernel_thread";
 			else if (symbol_exists("arch_kernel_thread"))
-				name = "arch_kernel_thread";
+				func_name = "arch_kernel_thread";
 		} else if (!(bt->flags & BT_SCHEDULE)) {
-			if (STREQ(name, "error_exit")) 
+			if (STREQ(func_name, "error_exit")) 
 				eframe_check = 8;
 			else {
 				if (CRASHDEBUG(2))
@@ -1308,7 +1320,7 @@ x86_64_print_stack_entry(struct list_head *frame_list,
 	    offset != 0 && 
 	    !(bt->flags & (BT_EXCEPTION_FRAME|BT_START|BT_SCHEDULE))) { 
 		for (i = 0; exception_functions[i] != 0; i++) {
-			if (STREQ(name, exception_functions[i])) {
+			if (STREQ(func_name, exception_functions[i])) {
 				eframe_check = 8;
 				break;
 			}
@@ -1316,16 +1328,16 @@ x86_64_print_stack_entry(struct list_head *frame_list,
 	}
 
 	if (bt->flags & BT_SCHEDULE)
-		name = "schedule";
+		func_name = "schedule";
 
-	if (STREQ(name, "child_rip")) {
+	if (STREQ(func_name, "child_rip")) {
 		if (symbol_exists("kernel_thread"))
-			name = "kernel_thread";
+			func_name = "kernel_thread";
                 else if (symbol_exists("arch_kernel_thread"))
-			name = "arch_kernel_thread";
+			func_name = "arch_kernel_thread";
 		rc = BACKTRACE_COMPLETE;
-        } else if (STREQ(name, "cpu_idle") || 
-		   STREQ(name, "system_call_fastpath"))
+        } else if (STREQ(func_name, "cpu_idle") || 
+		   STREQ(func_name, "system_call_fastpath"))
 		rc = BACKTRACE_COMPLETE;
 	else {
 		rc = BACKTRACE_ENTRY_DISPLAYED;
@@ -1338,7 +1350,7 @@ x86_64_print_stack_entry(struct list_head *frame_list,
 	else
 		rsp = bt->stackbase + (stkindex * sizeof(ulong));
 
-	fi->fi_start = rsp;
+	xf->xf_frame_start = rsp;
 
 	if (bt->frameptr != 0)
 		x86_64_display_full_frame(bt, rsp, fp);
@@ -1346,21 +1358,21 @@ x86_64_print_stack_entry(struct list_head *frame_list,
 	bt->frameptr = rsp + sizeof(ulong);
 
 	fprintf(fp, "%s#%d [%8lx] %s at %lx", level < 10 ? " " : "", level,
-		rsp, name, text);
+		rsp, func_name, text);
 
-	if (STREQ(name, "tracesys")) {
+	if (STREQ(func_name, "tracesys")) {
 		fprintf(fp, " (via system_call)");
-	} else if (STRNEQ(name, ".text.lock.")) {
-		if ((locking_func = text_lock_function(name, bt, text)) &&
+	} else if (STRNEQ(func_name, ".text.lock.")) {
+		if ((locking_func = text_lock_function(func_name, bt, text)) &&
 		    (spl = value_search(locking_func, &offset)))
 			fprintf(fp, " (via %s)", spl->name);
 	}
 
-	if (module_symbol(text, NULL, &lm, NULL, 0))
+	if (module_symbol(text, NULL, &lm, NULL, 0)) {
 		fprintf(fp, " [%s]", lm->mod_name);
-	else
-		lm = NULL;
-	fi->fi_mod = lm;
+		xf->xf_mod = lm;
+		xf->xf_mod_name = lm->mod_name;
+	}
 
 	if (bt->flags & BT_FRAMESIZE_DISABLE)
 		fprintf(fp, " *");
@@ -1377,9 +1389,9 @@ x86_64_print_stack_entry(struct list_head *frame_list,
 	}
 
 	if (BT_REFERENCE_CHECK(bt))
-		x86_64_do_bt_reference_check(bt, text, name);
+		x86_64_do_bt_reference_check(bt, text, func_name);
 
-	bt->call_target = name;
+	bt->call_target = func_name;
 
 	if (is_direct_call_target(bt)) {
 		bt->flags |= BT_CHECK_CALLER;
@@ -1390,9 +1402,15 @@ x86_64_print_stack_entry(struct list_head *frame_list,
 		bt->flags &= ~(ulonglong)BT_CHECK_CALLER;
 	}
 
+	/* This or use original. */
+	/* FIXME More init. */
+	xf->xf_func_name = func_name;
+
 out:
-	if (fi != NULL)
-		list_add_tail(&fi->fi_link, frame_list);
+	/* FIXME Cleanup. */
+
+	if (xf != NULL)
+		list_add_tail(&xf->xf_link, xf_list);
 
 	return rc;
 }
@@ -1416,8 +1434,10 @@ out:
 "    process stack pointer: %lx\n"\
 "       current stack base: %lx\n"
 
-static void x86_64_low_budget_back_trace_cmd(const struct bt_info *bt_in,
-					     struct list_head *frame_list)
+
+/* Was x86_64_low_budget_back_trace_cmd(). */
+static void xbt_back_trace_to_xf_list(const struct bt_info *bt_in,
+				      struct list_head *frame_list)
 {
 	struct machine_specific *ms = machdep->machspec;
 	struct bt_info bt_local, *bt;
@@ -1504,7 +1524,7 @@ static void x86_64_low_budget_back_trace_cmd(const struct bt_info *bt_in,
 		else if (SADUMP_DUMPFILE())
 			sadump_display_regs(bt->tc->processor, fp);
         } else if (bt->flags & BT_START) {
-                x86_64_print_stack_entry(frame_list, bt, fp, level,
+                xbt_add_frame(frame_list, bt, fp, level,
                         0, bt->instptr);
 		bt->flags &= ~BT_START;
 		level++;
@@ -1539,7 +1559,7 @@ in_exception_stack:
 		if (irq_eframe) {
 			bt->flags |= BT_EXCEPTION_FRAME;
 			i = (irq_eframe - bt->stackbase) / sizeof(ulong);
-			x86_64_print_stack_entry(frame_list, bt, fp, level, i, bt->instptr);
+			xbt_add_frame(frame_list, bt, fp, level, i, bt->instptr);
 			bt->flags &= ~(ulonglong)BT_EXCEPTION_FRAME;
 			cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0,
 						    bt->stackbuf +
@@ -1566,7 +1586,7 @@ in_exception_stack:
 			if (!is_kernel_text(*up))
 		        	continue;
 
-			switch (x86_64_print_stack_entry(frame_list, bt, fp, level, i, *up)) {
+			switch (xbt_add_frame(frame_list, bt, fp, level, i, *up)) {
 			case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
 				i += SIZE(pt_regs) / sizeof(ulong);
@@ -1619,7 +1639,7 @@ in_exception_stack:
 		 */
 		if (!done) {
 			bt->flags |= BT_START|BT_SAVE_EFRAME_IP;
-			x86_64_print_stack_entry(frame_list, bt, fp, level,
+			xbt_add_frame(frame_list, bt, fp, level,
 						 0, bt->instptr);
 			bt->flags &= 
 			    	~(BT_START|BT_SAVE_EFRAME_IP|BT_FRAMESIZE_DISABLE);
@@ -1676,7 +1696,7 @@ in_exception_stack:
 			if (!is_kernel_text(*up))
 				continue;
 
-			switch (x86_64_print_stack_entry(frame_list, bt, fp, level, i, *up)) {
+			switch (xbt_add_frame(frame_list, bt, fp, level, i, *up)) {
 			case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
 				i += SIZE(pt_regs) / sizeof(ulong);
@@ -1789,7 +1809,7 @@ in_exception_stack:
 	     STREQ(rip_symbol, "__schedule"))) {
 		if (STREQ(rip_symbol, "__schedule")) {
 			i = (rsp - bt->stackbase) / sizeof(ulong);
-			x86_64_print_stack_entry(frame_list, bt, fp, level, i, bt->instptr);
+			xbt_add_frame(frame_list, bt, fp, level, i, bt->instptr);
 			level++;
 			rsp = __schedule_frame_adjust(rsp, bt);
 			if (STREQ(closest_symbol(bt->instptr), "schedule"))
@@ -1800,7 +1820,7 @@ in_exception_stack:
 
 		if (bt->flags & BT_SCHEDULE) {
 			i = (rsp - bt->stackbase) / sizeof(ulong);
-			x86_64_print_stack_entry(frame_list, bt, fp, level, i, bt->instptr);
+			xbt_add_frame(frame_list, bt, fp, level, i, bt->instptr);
 			bt->flags &= ~(ulonglong)BT_SCHEDULE;
 			rsp += sizeof(ulong);
 			level++;
@@ -1816,7 +1836,7 @@ in_exception_stack:
         if (irq_eframe) {
                 bt->flags |= BT_EXCEPTION_FRAME;
                 i = (irq_eframe - bt->stackbase) / sizeof(ulong);
-                x86_64_print_stack_entry(frame_list, bt, fp, level, i, bt->instptr);
+                xbt_add_frame(frame_list, bt, fp, level, i, bt->instptr);
                 bt->flags &= ~(ulonglong)BT_EXCEPTION_FRAME;
                 cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0, 
 			bt->stackbuf + (irq_eframe - bt->stackbase), bt, fp);
@@ -1885,7 +1905,7 @@ in_exception_stack:
 			}
 		}
 
-		switch (x86_64_print_stack_entry(frame_list, bt, fp, level, i, *up)) {
+		switch (xbt_add_frame(frame_list, bt, fp, level, i, *up)) {
 		case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 			last_process_stack_eframe = rsp + 8;
 			if (x86_64_print_eframe_location(last_process_stack_eframe, level, fp))
@@ -1927,13 +1947,11 @@ in_exception_stack:
 	}
 
 }
-/* END copy */
+/* END copy of from crash... */
 
-#define xbt_trace(fmt, args...) \
-	error(INFO, "@ %s:%d: "fmt, __func__, __LINE__, ##args)
-
-static void fprint_frame_info(FILE *file, struct frame_info *fi)
+static void xbt_frame_print(FILE *file, struct xbt_frame *xf)
 {
+#if 0
 	char *mod_path = NULL;
 	int mod_fd = -1;
 	Elf *mod_elf = NULL;
@@ -2102,6 +2120,7 @@ out:
 		close(mod_fd);
 
 	free(mod_path);
+#endif
 }
 
 void xbt_func(void)
@@ -2117,7 +2136,7 @@ void xbt_func(void)
 	}, *bt = &bt_info;
 	ulong rsp;
 	char *rip_sym;
-	LIST_HEAD(frame_list);
+	LIST_HEAD(xf_list);
 
 	xbt_trace("stack %#016lx %#016lx\n", bt->stackbase, bt->stacktop);
 
@@ -2139,33 +2158,37 @@ void xbt_func(void)
 	rip_sym = closest_symbol(bt->instptr);
 	xbt_trace("rip_sym %s\n", rip_sym);
 
-	x86_64_low_budget_back_trace_cmd(bt, &frame_list);
+	xbt_back_trace_to_xf_list(bt, &xf_list);
 
 	/* fi_start includes the pushed rip */
 
-	struct frame_info *fi;
-	list_for_each_entry(fi, &frame_list, fi_link) {
-		if (fi->fi_link.next != &frame_list)
-			fi->fi_end = fi_next(fi)->fi_start;
+	struct xbt_frame *xf;
+	list_for_each_entry(xf, &xf_list, xf_link) {
+		if (xf->xf_link.next != &xf_list)
+			xf->xf_frame_end = xf_next(xf)->xf_frame_start;
 		else
-			fi->fi_end = fi->fi_start;
+			xf->xf_frame_end = xf->xf_frame_start;
 
 		/* Wrong. */
-		fi->fi_base = &bt->stackbuf[fi->fi_end -
-					    bt->stackbase -
-					    sizeof(ulong)];
+		xf->xf_frame_base = &bt->stackbuf[xf->xf_frame_end -
+						  bt->stackbase -
+						  sizeof(ulong)];
+		/* FIXME More init. */
+		/* xf_text_offset */
 
-		xbt_trace("level %d, start %#016lx, end %#016lx, "
+		xbt_trace("level %d, "
+			  "frame_start %#016lx, "
+			  "frame_end %#016lx, "
 			  "size %lu, *base %#016lx, "
-			  "text %#016lx, name %s, mod %s\n",
-			  fi->fi_level, fi->fi_start, fi->fi_end,
-			  fi->fi_end - fi->fi_start,
-			  *(ulong *)fi->fi_base,
-			  fi->fi_text,
-			  fi->fi_syment != NULL ? fi->fi_syment->name : "NONE",
-			  fi->fi_mod != NULL ? fi->fi_mod->mod_name : "NONE");
+			  "RIP %#016lx, name %s, mod %s\n",
+			  xf->xf_level, xf->xf_frame_start, xf->xf_frame_end,
+			  xf->xf_frame_end - xf->xf_frame_start,
+			  *(ulong *)xf->xf_frame_base,
+			  xf->xf_rip,
+			  xf->xf_func_name != NULL ? xf->xf_func_name : "NONE",
+			  xf->xf_mod_name != NULL ? xf->xf_mod_name : "NONE");
 
-		fprint_frame_info(fp, fi);
+		xbt_frame_print(fp, xf);
 	}
 }
 

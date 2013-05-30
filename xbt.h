@@ -7,9 +7,7 @@
 #include <elfutils/libdw.h>
 #include "list.h"
 
-#ifndef ARRAY_LENGTH
-#define ARRAY_LENGTH(a) (sizeof(a) / sizeof((a)[0]))
-#endif
+#define XBT_ARRAY_LENGTH(a) (sizeof(a) / sizeof((a)[0]))
 
 #define xbt_trace(fmt, args...) \
 	fprintf(stderr, "@ %s:%d: "fmt"\n", __func__, __LINE__, ##args)
@@ -44,97 +42,100 @@ static inline const char *xbt_strerror(int err)
 struct load_module;
 struct syment;
 
-struct xbt_context {
-	/* Frame data. */
-	struct list_head	xc_link;
-	int			xc_level; /* #i in crash 'bt'. */
-	const void	       *xc_frame_base; /* Copy of frame in our memory. */
-	unsigned long		xc_frame_start;
-	unsigned long		xc_frame_end;
-	unsigned long		xc_frame_rip; /* saved rip */
+struct xbt_frame {
+	/* Stack and frame data. */
+	struct list_head	xf_link;
+	int			xf_level; /* #i in crash 'bt'. */
+	const void	       *xf_stack_base; /* Copy of stack in our memory. */
+	unsigned long		xf_stack_start;
+	unsigned long		xf_stack_end;
+	const void	       *xf_frame_base; /* Copy of frame in our memory. */
+	unsigned long		xf_frame_start;
+	unsigned long		xf_frame_end;
+	unsigned long		xf_rip; /* saved rip */
 
-	unsigned long		xc_reg[XBT_NR_REGS];
-	unsigned long		xc_reg_mask;
+	unsigned long		xf_reg[XBT_NR_REGS];
+	unsigned long		xf_reg_mask;
 
 	/* Function data. */
-	struct syment	       *xc_syment;
-	const char	       *xc_func_name;
-	unsigned long		xc_func_offset;
-	unsigned long		xc_text_section;
-	unsigned long		xc_text_offset;
+	struct syment	       *xf_syment;
+	const char	       *xf_func_name;
+	unsigned long		xf_func_offset;
+	unsigned long		xf_text_section;
+	unsigned long		xf_text_offset;
 
 	/* Module data. */
-	struct load_module     *xc_module;
-	const char	       *xc_module_name;
-	const char	       *xc_module_debuginfo_path;
+	struct load_module     *xf_mod;
+	const char	       *xf_mod_name;
+	const char	       *xf_mod_debuginfo_path;
 
-	unsigned long		xc_is_exception:1,
-				xc_is_irq:1;
+	unsigned long		xf_is_exception:1,
+				xf_is_irq:1;
 
-	int (*xc_reg_ref)(struct xbt_context *,
+	int (*xf_reg_ref)(struct xbt_frame *,
 			  unsigned long * /* dest */,
 			  unsigned /* reg */);
-	int (*xc_frame_ref)(struct xbt_context *,
+	int (*xf_frame_ref)(struct xbt_frame *,
 			    unsigned long * /* dest */,
 			    long /* offset */);
-	int (*xc_mem_ref)(struct xbt_context *,
+	int (*xf_mem_ref)(struct xbt_frame *,
 			  void */* dest */,
 			  unsigned long /* address */,
 			  size_t /* size */);
 };
 
-static inline struct xbt_context *xbt_next(struct xbt_context *xc)
+static inline struct xbt_frame *xf_next(struct xbt_frame *xf)
 {
-	return list_entry(xc->xc_link.next, struct xbt_context, xc_link);
+	return list_entry(xf->xf_link.next, struct xbt_frame, xf_link);
 }
 
-static inline int xc_reg_ref(struct xbt_context *xc,
+static inline int xf_reg_ref(struct xbt_frame *xf,
 			     unsigned long *v,
 			     unsigned i)
 {
-	if (xc->xc_reg_ref != NULL)
-		return xc->xc_reg_ref(xc, v, i);
+	if (xf->xf_reg_ref != NULL)
+		return xf->xf_reg_ref(xf, v, i);
 
-	if (!(i < ARRAY_LENGTH(xc->xc_reg)))
+	if (!(i < XBT_ARRAY_LENGTH(xf->xf_reg)))
 		return -XBT_BAD_REG;
 
-	if (!(xc->xc_reg_mask & (1UL << i)))
+	if (!(xf->xf_reg_mask & (1UL << i)))
 		return -XBT_UNKNOWN;
 
-	*v = xc->xc_reg[i];
+	*v = xf->xf_reg[i];
 
 	return XBT_OK;
 }
 
-static inline int xc_frame_ref(struct xbt_context *xc,
+static inline int xf_frame_ref(struct xbt_frame *xf,
 			       unsigned long *v,
 			       long offset)
 {
-	if (xc->xc_frame_ref != NULL)
-		return xc->xc_frame_ref(xc, v, offset);
+	if (xf->xf_frame_ref != NULL)
+		return xf->xf_frame_ref(xf, v, offset);
 
-	if (!(offset < xc->xc_frame_end - xc->xc_frame_start)) {
+	if (!(offset < xf->xf_frame_end - xf->xf_frame_start)) {
 		/* ... */
 		return -XBT_BAD_FRAME;
 	}
 
 	*v = *(const unsigned long *)
-		(((const char *)xc->xc_frame_base) + offset);
+		(((const char *)xf->xf_frame_base) + offset);
 
 	return 0;
 }
 
-static inline int xc_mem_ref(struct xbt_context *xc,
+static inline int xf_mem_ref(struct xbt_frame *xf,
 			     void *buf, unsigned long addr,
 			     size_t size)
 {
-	if (xc->xc_mem_ref != NULL)
-		return xc->xc_mem_ref(xc, buf, addr, size);
+	if (xf->xf_mem_ref != NULL)
+		return xf->xf_mem_ref(xf, buf, addr, size);
 
 	return -XBT_UNSUPP;
 }
 
-int xbt_dwarf_eval(struct xbt_context *xc,
+int xbt_dwarf_eval(struct xbt_frame *xf,
 		   Dwarf_Word *obj, Dwarf_Word *bit_mask, size_t obj_size,
 		   const Dwarf_Op *expr, size_t expr_len);
 
