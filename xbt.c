@@ -1952,7 +1952,7 @@ void xbt_restore_parent_regs(struct xbt_frame *xp, struct xbt_frame *xc)
 	      prolog[i++] == 0xe5))
 		return;
 
-	rsp_off = - sizeof(unsigned long);
+	rsp_off = - 2 * sizeof(unsigned long);
 
 	/* Semibackwards nonportable prolog disassembler. */
 	while (i + 8 < sizeof(prolog)) {
@@ -2042,7 +2042,7 @@ void xbt_restore_parent_regs(struct xbt_frame *xp, struct xbt_frame *xc)
 			rsp_off -= sizeof(unsigned long);
 		}
 
-		if (xf_frame_ref(xp, &xp->xf_reg[ri], off) < 0)
+		if (xf_frame_ref(xc, &xp->xf_reg[ri], off) < 0)
 			return;
 
 		xp->xf_reg_mask |= (1UL << ri);
@@ -2132,8 +2132,20 @@ void xbt_func(void)
 			  // *(ulong *)xf->xf_stack_base
 			);
 
+#define SHOW_REG(r)						\
+		if (xf->xf_reg_mask & (1UL << (r)))		\
+			xbt_trace("%s %lx", #r, xf->xf_reg[r])
+
+		SHOW_REG(XBT_RBX);
+		SHOW_REG(XBT_R12);
+		SHOW_REG(XBT_R13);
+		SHOW_REG(XBT_R14);
+		SHOW_REG(XBT_R15);
+
 		if (xf->xf_frame_start != xf->xf_frame_end)
 			xbt_frame_print(fp, xf);
+
+		xbt_trace("");
 	}
 out:
 	xbt_file = NULL;
