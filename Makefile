@@ -1,6 +1,6 @@
 
 CPPFLAGS = -D_GNU_SOURCE -DX86_64 #-I/usr/include/crash
-CFLAGS = -Wall -fPIC
+CFLAGS = -Wall -fPIC -g
 
 all: xbt.so dw dw1 dw2 dw3
 
@@ -16,7 +16,7 @@ dw1: dw1.o
 dw2: dw2.o
 	$(CC) -lelf -ldw $^ -o $@
 
-dw3: dw3.o
+dw3: dw3.o xbt_eval.o
 	$(CC) -lelf -ldw $^ -o $@
 
 # xbt.so:

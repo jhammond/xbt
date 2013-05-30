@@ -135,7 +135,7 @@ static inline int xc_mem_ref(struct xbt_context *xc,
 }
 
 int xbt_dwarf_eval(struct xbt_context *xc,
-		   Dwarf_Word *result, Dwarf_Word *mask, size_t size,
+		   Dwarf_Word *obj, Dwarf_Word *bit_mask, size_t obj_size,
 		   const Dwarf_Op *expr, size_t expr_len);
 
 #endif

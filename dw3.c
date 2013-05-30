@@ -14,19 +14,13 @@
 #include <assert.h>
 #include "xbt.h"
 
-struct xbt_dwfl_module_arg {
-	const char *a_path;
-	unsigned long a_text; /* Start of module .text section. */
-	unsigned long a_text_offset; /* Offset of saved RIP in .text. */
-};
-
 static int xbt_dwfl_module_cb(Dwfl_Module *dwflmod,
 			      void **user_data,
 			      const char *name,
 			      Dwarf_Addr base,
-			      void *parg)
+			      void *arg)
 {
-	struct xbt_dwfl_module_arg *arg = parg;
+	struct xbt_context *xc = arg;
 	const char *scn_name = ".debug_info";
 
 	int maxdies = 20;
@@ -44,12 +38,13 @@ static int xbt_dwfl_module_cb(Dwfl_Module *dwflmod,
 	Dwarf_Addr dwbias;
 	Dwarf_Die *dies = NULL;
 
-	Dwarf_Addr text_offset = arg->a_text_offset;
-	Dwarf_Addr pc; /* Bah! */
+	Dwarf_Addr text_offset = xc->xc_text_offset;
+	const char *path = xc->xc_module_debuginfo_path;
+	Dwarf_Addr pc;
 
 	int rc = -1;
 
-	xbt_trace("path '%s', text_offset %lx", arg->a_path, text_offset);
+	xbt_trace("path '%s', text_offset %lx", path, text_offset);
 
 	dbg = dwfl_module_getdwarf(dwflmod, &dwbias);
 	if (dbg == NULL) {
@@ -164,7 +159,7 @@ next_cu:
 			if (!(low_pc <= pc && pc < high_pc))
 				goto next_die;
 
-			printf("DIE subprogam %s, offset %lx, "
+			printf("DIE subprogram %s, offset %lx, "
 			       "pc %#lx, low_pc %#lx, high_pc %#lx",
 			       dwarf_diename(die),
 			       dwarf_dieoffset(die),
@@ -183,7 +178,7 @@ next_cu:
 
 			loc_attr = dwarf_attr(die, DW_AT_location, &loc_attr_mem);
 			if (loc_attr == NULL) {
-				xbt_error("%s %s, offset %lx\n has no location",
+				xbt_error("%s %s, offset %lx has no location",
 					  tag_name,
 					  dwarf_diename(die),
 					  dwarf_dieoffset(die));
@@ -207,11 +202,19 @@ next_cu:
 
 			for (i = 0; i < nr_locs; i++) {
 				Dwarf_Op *op = expr[i];
-				size_t j, len = expr_len[i];
+				size_t len = expr_len[i];
 
-				for (j = 0; j < len; j++)
-					printf("%02hhx%s",
-					       op[j].atom, j < len - 1 ? " " : "\n");
+				/*
+				  size_t j;
+				  for (j = 0; j < len; j++)
+				  printf("%02hhx%s",
+				  op[j].atom, j < len - 1 ? " " : "\n");
+				*/
+				Dwarf_Word obj[512];
+				Dwarf_Word bit_mask[512];
+
+				xbt_dwarf_eval(xc, obj, bit_mask, sizeof(obj),
+					       op, len);
 			}
 		} else {
 			goto next_die;
@@ -284,7 +287,7 @@ int main(int argc, char *argv[])
 
 	int dwfl_fd = dup(mod_fd);
 	if (dwfl_fd < 0) {
-		xbt_error("cannot dup fd %d, '%s': %s",
+		xbt_error("cannot dup fd %d: %s",
 			  mod_fd, mod_path, strerror(errno));
 		goto out;
 	}
@@ -298,13 +301,12 @@ int main(int argc, char *argv[])
 
 	dwfl_report_end(dwfl, NULL, NULL);
 
-	struct xbt_dwfl_module_arg arg = {
-		.a_path = mod_path,
-		.a_text = text,
-		.a_text_offset = addr - text,
+	struct xbt_context xc = {
+		.xc_module_debuginfo_path = mod_path,
+		.xc_text_offset = addr - text,
 	};
 
-	dwfl_getmodules(dwfl, xbt_dwfl_module_cb, &arg, 0 /* offset*/);
+	dwfl_getmodules(dwfl, xbt_dwfl_module_cb, &xc, 0 /* offset*/);
 	/* ... */
 	dwfl_end(dwfl);
 out:

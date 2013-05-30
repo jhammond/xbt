@@ -14,7 +14,7 @@
 #define XBT_EVAL_TODO XBT_TODO
 #define XBT_BAD_OP XBT_EVAL_BAD_OP
 
-static bool xbt_eval_abort_on_error = true;
+static bool xbt_eval_abort_on_error = false;
 
 int xbt_dwarf_eval(struct xbt_context *xc,
 		   Dwarf_Word *obj, Dwarf_Word *bit_mask, size_t obj_size,
@@ -33,7 +33,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 #define OUT(err)							\
 	do  {								\
 		int _err = (err);					\
-		assert(0 <= _err);					\
+		assert(_err <= 0);					\
 		if (xbt_eval_abort_on_error && _err != 0)		\
 			abort();					\
 		rc = -_err;						\
@@ -52,7 +52,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 	do {								\
 		Dwarf_Word _w;						\
 									\
-		REQ(K < ARRAY_LENGTH(E) - 1, XBT_EVAL_OVERFLOW);	\
+		REQ(K < ARRAY_LENGTH(E) - 1, -XBT_EVAL_OVERFLOW);	\
 		is_value = false;					\
 		_w = (w);						\
 		E[K++] = _w;						\
@@ -60,7 +60,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 
 #define POP()								\
 	({								\
-		REQ(0 < K, XBT_EVAL_UNDERFLOW);				\
+		REQ(0 < K, -XBT_EVAL_UNDERFLOW);			\
 		is_value = false;					\
 		E[--K];							\
 	})
@@ -70,7 +70,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 		size_t _d;						\
 									\
 		_d = (d);						\
-		REQ(_d < K, XBT_EVAL_UNDERFLOW);			\
+		REQ(_d < K, -XBT_EVAL_UNDERFLOW);			\
 		E[K - _d - 1];						\
 	})
 
@@ -81,7 +81,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 		int _rc;						\
 									\
 		_s = (size);						\
-		REQ(_s <= sizeof(_m), XBT_EVAL_BAD_OP);			\
+		REQ(_s <= sizeof(_m), -XBT_EVAL_BAD_OP);		\
 									\
 		_rc = xc_mem_ref(xc, &_m, (addr), _s);			\
 		if (_rc != 0)						\
@@ -252,18 +252,18 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 		case DW_OP_xderef:
 			/* Extended dereference: t0 is address, t1 is
 			 * address space identifier. */
-			OUT(XBT_EVAL_UNSUPP); /* Not emitted AFAIK. */
+			OUT(-XBT_EVAL_UNSUPP); /* Not emitted AFAIK. */
 		case DW_OP_xderef_size:
 			/* Same as xderef excpet that n0 is the value size. */
-			OUT(XBT_EVAL_UNSUPP); /* Not emitted AFAIK. */
+			OUT(-XBT_EVAL_UNSUPP); /* Not emitted AFAIK. */
 		case DW_OP_push_object_address:
 			/* For 'this'? */
-			OUT(XBT_EVAL_UNSUPP); /* Not emitted AFAIK. */
+			OUT(-XBT_EVAL_UNSUPP); /* Not emitted AFAIK. */
 		case DW_OP_form_tls_address:
-			OUT(XBT_EVAL_TODO); /* Not emitted AFAIK. */
+			OUT(-XBT_EVAL_TODO); /* Not emitted AFAIK. */
 		case DW_OP_call_frame_cfa:
 			/* CFA computed from CFI. */
-			OUT(XBT_EVAL_TODO); /* Not emitted AFAIK. */
+			OUT(-XBT_EVAL_TODO); /* Not emitted AFAIK. */
 
 		/* Arithmetic and logical operations. */
 		case DW_OP_abs: {
@@ -290,7 +290,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 			t1 = POP();
 			/* TODO CHECKME */
 			REQ(t0 != 0 && (t0 != -1 || t1 != DWARF_SWORD_MIN),
-			    XBT_EVAL_DIV_ERR);
+			    -XBT_EVAL_DIV_ERR);
 			PUSH(t1 / t0);
 			break;
 		}
@@ -310,7 +310,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 
 			/* TODO CHECKME */
 			REQ(t0 != 0 && (t0 != -1 || t1 != DWARF_SWORD_MIN),
-			    XBT_EVAL_DIV_ERR);
+			    -XBT_EVAL_DIV_ERR);
 
 			PUSH(t1 % t0);
 			break;
@@ -454,7 +454,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 					break;
 
 			if (j == expr_len)
-				OUT(XBT_EVAL_BAD_OP);
+				OUT(-XBT_EVAL_BAD_OP);
 
 			i = j - 1;
 			break;
@@ -470,7 +470,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 		case DW_OP_call2:
 		case DW_OP_call4:
 		case DW_OP_call_ref:
-			OUT(XBT_EVAL_UNSUPP); /* Not emitted AFAIK. */
+			OUT(-XBT_EVAL_UNSUPP); /* Not emitted AFAIK. */
 
 		/* Special operations. */
 		case DW_OP_nop:
@@ -525,7 +525,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 		   value in the memory representation of the target
 		   machine. The length operand gives the length in
 		   bytes of the block. */
-			OUT(XBT_EVAL_TODO); /* Not emitted AFAIK. */
+			OUT(-XBT_EVAL_TODO); /* Not emitted AFAIK. */
 
 		case DW_OP_stack_value:
 			is_value = true;
@@ -544,8 +544,8 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 			bool have_value = false;
 
 			/* n0 is size in bytes. */
-			REQ(bit_off % 8 == 0, XBT_BAD_OP); /* XXX Safe? */
-			REQ(bit_off + 8 * n0 <= 8 * obj_size, XBT_BAD_OP);
+			REQ(bit_off % 8 == 0, -XBT_BAD_OP); /* XXX Safe? */
+			REQ(bit_off + 8 * n0 <= 8 * obj_size, -XBT_BAD_OP);
 
 			if (IS_EMPTY()) {
 				/* Empty location. */
@@ -588,17 +588,17 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 			break;
 		}
 		case DW_OP_bit_piece:
-			OUT(XBT_EVAL_TODO); /* Rarely emimtted. */
+			OUT(-XBT_EVAL_TODO); /* Rarely emimtted. */
 
 		/* GNU extensions. */
 		case DW_OP_GNU_push_tls_address:
 		case DW_OP_GNU_uninit:
 		case DW_OP_GNU_encoded_addr:
 		case DW_OP_GNU_implicit_pointer:
-			OUT(XBT_EVAL_UNSUPP); /* Not emitted AFAIK. */
+			OUT(-XBT_EVAL_UNSUPP); /* Not emitted AFAIK. */
 
 		default:
-			OUT(XBT_EVAL_BAD_OP);
+			OUT(-XBT_EVAL_BAD_OP);
 		}
 	}
 
@@ -606,7 +606,7 @@ int xbt_dwarf_eval(struct xbt_context *xc,
 		OUT(XBT_OK);
 
 	if (IS_EMPTY())
-		OUT(XBT_BAD_OP); /* Is this ever OK? */
+		OUT(-XBT_BAD_OP); /* Is this ever OK? */
 
 	if (is_value) {
 		Dwarf_Word t0;
