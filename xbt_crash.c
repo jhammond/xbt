@@ -1,10 +1,31 @@
+/* xbt_crash.c -- xbt crash module component.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * Copyright (C) 2004-2013 David Anderson
+ * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
+ * Copyright (c) 2013 Intel Corporation.
+ *
+ * Portions of this file adapted from
+ * x86_64_low_budget_back_trace_cmd() and supporting functions from
+ * crash-7.0.0/x86_64.c.
+ *
+ * Author: John L. Hammond <john.hammond@intel.com>
+ */
 #include <stdbool.h>
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <malloc.h>
-#include <ftw.h>
-#ifndef CRASHDEBUG
+#ifndef CRASHDEBUG /* No include guard in crash/defs.h. */
 #include <crash/defs.h>
 #endif
 #include "xbt.h"
@@ -1175,7 +1196,7 @@ long x86_64_exception_frame(ulong flags, ulong kvaddr, char *local,
 	return 0;
 }
 
-/* Only from print_stack_entry. */
+/* Only called from print_stack_entry. */
 static void
 x86_64_display_full_frame(struct bt_info *bt, ulong rsp, FILE *fp)
 {
@@ -1211,7 +1232,7 @@ x86_64_display_full_frame(struct bt_info *bt, ulong rsp, FILE *fp)
 #define BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED (4)
 
 /* Was x86_64_print_stack_entry() */
-static int xbt_add_frame(struct list_head *xf_list,
+static int xbt_frame_add(struct list_head *xf_list,
 			 struct bt_info *bt, FILE *fp, int level, 
 			 int stkindex, ulong text)
 {
@@ -1368,6 +1389,7 @@ static int xbt_add_frame(struct list_head *xf_list,
 
 	/* This or use original. (Now I wonder what I meant by that.) */
 	/* FIXME More init. */
+	/* FIXME REview control flow. */
 	xf->xf_func_name = func_name;
 	xf->xf_func_start = xf->xf_syment->value;
 	xf->xf_func_offset = xf->xf_rip - xf->xf_func_start;
@@ -1399,10 +1421,11 @@ out:
 "    process stack pointer: %lx\n"\
 "       current stack base: %lx\n"
 
-
-/* Was x86_64_low_budget_back_trace_cmd(). */
-static void xbt_back_trace_to_xf_list(const struct bt_info *bt_in,
-				      struct list_head *frame_list)
+/* xbt_back_trace_to_xf_list() -- convetr crash bt_info to xbt frame
+   list.  Was x86_64_low_budget_back_trace_cmd(). */
+static void xbt_back_trace_to_list(const struct bt_info *bt_in,
+				   struct list_head *xf_list,
+				   FILE *fp)
 {
 	struct machine_specific *ms = machdep->machspec;
 	struct bt_info bt_local, *bt;
@@ -1489,7 +1512,7 @@ static void xbt_back_trace_to_xf_list(const struct bt_info *bt_in,
 		else if (SADUMP_DUMPFILE())
 			sadump_display_regs(bt->tc->processor, fp);
         } else if (bt->flags & BT_START) {
-                xbt_add_frame(frame_list, bt, fp, level,
+                xbt_frame_add(xf_list, bt, fp, level,
                         0, bt->instptr);
 		bt->flags &= ~BT_START;
 		level++;
@@ -1524,7 +1547,7 @@ in_exception_stack:
 		if (irq_eframe) {
 			bt->flags |= BT_EXCEPTION_FRAME;
 			i = (irq_eframe - bt->stackbase) / sizeof(ulong);
-			xbt_add_frame(frame_list, bt, fp, level, i, bt->instptr);
+			xbt_frame_add(xf_list, bt, fp, level, i, bt->instptr);
 			bt->flags &= ~(ulonglong)BT_EXCEPTION_FRAME;
 			cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0,
 						    bt->stackbuf +
@@ -1551,7 +1574,7 @@ in_exception_stack:
 			if (!is_kernel_text(*up))
 		        	continue;
 
-			switch (xbt_add_frame(frame_list, bt, fp, level, i, *up)) {
+			switch (xbt_frame_add(xf_list, bt, fp, level, i, *up)) {
 			case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
 				i += SIZE(pt_regs) / sizeof(ulong);
@@ -1604,7 +1627,7 @@ in_exception_stack:
 		 */
 		if (!done) {
 			bt->flags |= BT_START|BT_SAVE_EFRAME_IP;
-			xbt_add_frame(frame_list, bt, fp, level,
+			xbt_frame_add(xf_list, bt, fp, level,
 						 0, bt->instptr);
 			bt->flags &= 
 			    	~(BT_START|BT_SAVE_EFRAME_IP|BT_FRAMESIZE_DISABLE);
@@ -1661,7 +1684,7 @@ in_exception_stack:
 			if (!is_kernel_text(*up))
 				continue;
 
-			switch (xbt_add_frame(frame_list, bt, fp, level, i, *up)) {
+			switch (xbt_frame_add(xf_list, bt, fp, level, i, *up)) {
 			case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
 				i += SIZE(pt_regs) / sizeof(ulong);
@@ -1774,7 +1797,7 @@ in_exception_stack:
 	     STREQ(rip_symbol, "__schedule"))) {
 		if (STREQ(rip_symbol, "__schedule")) {
 			i = (rsp - bt->stackbase) / sizeof(ulong);
-			xbt_add_frame(frame_list, bt, fp, level, i, bt->instptr);
+			xbt_frame_add(xf_list, bt, fp, level, i, bt->instptr);
 			level++;
 			rsp = __schedule_frame_adjust(rsp, bt);
 			if (STREQ(closest_symbol(bt->instptr), "schedule"))
@@ -1785,7 +1808,7 @@ in_exception_stack:
 
 		if (bt->flags & BT_SCHEDULE) {
 			i = (rsp - bt->stackbase) / sizeof(ulong);
-			xbt_add_frame(frame_list, bt, fp, level, i, bt->instptr);
+			xbt_frame_add(xf_list, bt, fp, level, i, bt->instptr);
 			bt->flags &= ~(ulonglong)BT_SCHEDULE;
 			rsp += sizeof(ulong);
 			level++;
@@ -1801,7 +1824,7 @@ in_exception_stack:
         if (irq_eframe) {
                 bt->flags |= BT_EXCEPTION_FRAME;
                 i = (irq_eframe - bt->stackbase) / sizeof(ulong);
-                xbt_add_frame(frame_list, bt, fp, level, i, bt->instptr);
+                xbt_frame_add(xf_list, bt, fp, level, i, bt->instptr);
                 bt->flags &= ~(ulonglong)BT_EXCEPTION_FRAME;
                 cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0, 
 			bt->stackbuf + (irq_eframe - bt->stackbase), bt, fp);
@@ -1870,7 +1893,7 @@ in_exception_stack:
 			}
 		}
 
-		switch (xbt_add_frame(frame_list, bt, fp, level, i, *up)) {
+		switch (xbt_frame_add(xf_list, bt, fp, level, i, *up)) {
 		case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 			last_process_stack_eframe = rsp + 8;
 			if (x86_64_print_eframe_location(last_process_stack_eframe, level, fp))
@@ -1912,7 +1935,7 @@ in_exception_stack:
 	}
 
 }
-/* END copy of from crash... */
+/* END copy from crash-7.0.0/x86_64.c */
 
 static int xbt_crash_mem_ref(struct xbt_frame *xf, void *dest,
 			     unsigned long addr, size_t size)
@@ -1930,6 +1953,18 @@ static int xbt_crash_mem_ref(struct xbt_frame *xf, void *dest,
 	return rc;
 }
 
+/* xbt_frame_restore_regs() -- semibackwards nonportable prolog
+ * disassembler.  The 30 minute works for me version.
+ *
+ * Try to disassemble prolog of child, restoring as many callee save
+ * registers (rbx, r12-r15) as we can, while being as conservative as
+ * possible.
+ *
+ * TODO Ensure noreturn functions handed properly.
+ *
+ * TODO Try to restore parent's xf_reg from child's xf_reg when not
+ * saved by prolog. Requires that child registers be restored first as
+ * is the case now. */
 void xbt_frame_restore_regs(struct xbt_frame *xp)
 {
 	struct xbt_frame *xc;
@@ -1959,8 +1994,6 @@ void xbt_frame_restore_regs(struct xbt_frame *xp)
 
 	rsp_off = - 2 * sizeof(unsigned long);
 
-	/* Semibackwards nonportable prolog disassembler. */
-	/* 30 minute works for me version. */
 	while (i + 8 < sizeof(prolog)) {
 		long off = LONG_MIN;
 		unsigned int ri;
@@ -1981,18 +2014,18 @@ void xbt_frame_restore_regs(struct xbt_frame *xp)
 			o3 = prolog[i++];
 
 			if (o1 == 0x81 && o2 == 0xec) {
-				// FIXME sub o3..o6,%rsp
+				/* FIXME sub o3..o6,%rsp */
 				return;
 			}
 
  			if (o1 == 0x83 && o2 == 0xec) {
-				// sub o3,%rsp
+				/* sub o3,%rsp */
 				rsp_off -= (signed char)o3;
 				continue;
 			}
 
 			if (o1 == 0x89 && o2 == 0x5d) {
-				// 48 89 5d e8 mov %rbx,-0x18(%rbp)
+				/* 48 89 5d e8 mov %rbx,-0x18(%rbp) */
 				ri = XBT_RBX;
 				off = (signed char)o3;
 				break;
@@ -2004,14 +2037,16 @@ void xbt_frame_restore_regs(struct xbt_frame *xp)
 			o2 = prolog[i++];
 			o3 = prolog[i++];
 
-			// 4c 89 65 e8 mov %r12,-0x18(%rbp)
-			// 4c 89 6d f0 mov %r13,-0x10(%rbp)
-			// 4c 89 75 f8 mov %r14,-0x8(%rbp)
-			// 4c 89 7d f8 mov %r15,-0x8(%rbp)
-
-			// 4c 89 64 24 08 mov %r12,0x8(%rsp)
-			// 4c 89 6c 24 10 mov %r13,0x10(%rsp)
-			// 4c 89 74 24 18 mov %r14,0x18(%rsp)
+			/*
+			 * 4c 89 65 e8 mov %r12,-0x18(%rbp)
+			 * 4c 89 6d f0 mov %r13,-0x10(%rbp)
+			 * 4c 89 75 f8 mov %r14,-0x8(%rbp)
+			 * 4c 89 7d f8 mov %r15,-0x8(%rbp)
+			 *
+			 * 4c 89 64 24 08 mov %r12,0x8(%rsp)
+			 * 4c 89 6c 24 10 mov %r13,0x10(%rsp)
+			 * 4c 89 74 24 18 mov %r14,0x18(%rsp)
+			 */
 
 			if (o1 != 0x89)
 				return;
@@ -2036,7 +2071,7 @@ void xbt_frame_restore_regs(struct xbt_frame *xp)
 			break;
 
 		case 0x53:
-			// push %rbx
+			/* push %rbx */
 			ri = XBT_RBX;
 			break;
 		default:
@@ -2054,7 +2089,7 @@ void xbt_frame_restore_regs(struct xbt_frame *xp)
 		xp->xf_reg_mask |= (1UL << ri);
 	}
 }
-
+/* xbt_func() -- crash command callback. */
 void xbt_func(void)
 {
 	struct task_context *tc = CURRENT_CONTEXT();
@@ -2070,6 +2105,11 @@ void xbt_func(void)
 	char *rip_sym;
 	LIST_HEAD(xf_list);
 
+	/*
+	 * TODO Add option to select a specific frame.
+	 * TODO Add option to select a specific object/variable.
+	 * TODO Make frame numbering/display agree with 'bt -f'.
+	 */
 	xbt_trace("stack start %#016lx, end %#016lx", bt->stackbase, bt->stacktop);
 
 	fill_stackbuf(bt);
@@ -2090,15 +2130,15 @@ void xbt_func(void)
 	rip_sym = closest_symbol(bt->instptr);
 	xbt_trace("rip_sym %s", rip_sym);
 
-	xbt_back_trace_to_xf_list(bt, &xf_list);
+	xbt_back_trace_to_list(bt, &xf_list, pc->nullfp);
 
 	struct xbt_frame *xf;
 	list_for_each_entry(xf, &xf_list, xf_link) {
-		// Prev is child.  Next is parent.
-
+		/* Prev is child. */
 		if (xf->xf_link.prev != &xf_list)
 			xf->xf_has_child = true;
 
+		/*  Next is parent. */
 		if (xf->xf_link.next != &xf_list) {
 			xf->xf_has_parent = true;
 			xf->xf_frame_end = xf_parent(xf)->xf_frame_start;
@@ -2130,22 +2170,22 @@ void xbt_func(void)
 			  xf->xf_frame_start, xf->xf_frame_end,
 			  *(ulong *)xf->xf_frame_base);
 
-#define XBT_TRACE_REG(r)					\
+#define XBT_PRINT_REG(r)					\
 		if (xf->xf_reg_mask & (1UL << (r)))		\
 			xbt_print("\t%s = %lx\n", #r, xf->xf_reg[r])
 
-		XBT_TRACE_REG(XBT_RBX);
-		XBT_TRACE_REG(XBT_R12);
-		XBT_TRACE_REG(XBT_R13);
-		XBT_TRACE_REG(XBT_R14);
-		XBT_TRACE_REG(XBT_R15);
+		XBT_PRINT_REG(XBT_RBX);
+		XBT_PRINT_REG(XBT_R12);
+		XBT_PRINT_REG(XBT_R13);
+		XBT_PRINT_REG(XBT_R14);
+		XBT_PRINT_REG(XBT_R15);
 
-		// if (xf->xf_frame_start != xf->xf_frame_end)
 		xbt_frame_print(fp, xf);
 
 		xbt_print("\n");
 	}
 out:
+	/* FIXME Cleanup. */
 	((void) 0);
 }
 
@@ -2159,68 +2199,23 @@ void xmod_func(void)
 		if (!is_module_name(args[i], NULL, &lm))
 			continue;
 
-		fprintf(fp, "%s %8s %#016lx\n", lm->mod_name, "text", lm->mod_text_start);
-		fprintf(fp, "%s %8s %#016lx\n", lm->mod_name, "etext", lm->mod_etext_guess);
-		fprintf(fp, "%s %8s %#016lx\n", lm->mod_name, "rodata", lm->mod_rodata_start);
-		fprintf(fp, "%s %8s %#016lx\n", lm->mod_name, "data", lm->mod_data_start);
-		fprintf(fp, "%s %8s %#016lx\n", lm->mod_name, "bss", lm->mod_bss_start);
+		fprintf(fp, "%s %8s %#016lx\n",
+			lm->mod_name, "text", lm->mod_text_start);
+		fprintf(fp, "%s %8s %#016lx\n",
+			lm->mod_name, "etext", lm->mod_etext_guess);
+		fprintf(fp, "%s %8s %#016lx\n",
+			lm->mod_name, "rodata", lm->mod_rodata_start);
+		fprintf(fp, "%s %8s %#016lx\n",
+			lm->mod_name, "data", lm->mod_data_start);
+		fprintf(fp, "%s %8s %#016lx\n",
+			lm->mod_name, "bss", lm->mod_bss_start);
 
 		for (j = 0; j < lm->mod_sections; j++) {
 			md = &lm->mod_section_data[j];
 			fprintf(fp, "# name=%s, offset=%#016lx, size=%#016lx\n",
 				md->name, md->offset, md->size);
 		}
-#if 0
-		char *info_path = module_debuginfo_path(lm);
-		if (info_path != NULL)
-			fprintf(fp, "# %s\n", info_path);
-		free(info_path);
-#endif
-
 	}
-
-/*
-  p ((struct module *) 0xffffffffa0db5440)->sect_attrs[0].attrs[0]
-7 = {
-  mattr = {
-    attr = {
-      name = 0xffff88011400ab60 ".note.gnu.build-id",
-      owner = 0x0,
-      mode = 292
-    },
-    show = 0xffffffff810abed0 <module_sect_show>,
-    store = 0,
-    setup = 0,
-    test = 0,
-    free = 0
-  },
-  name = 0xffff88011400ab60 ".note.gnu.build-id",
-  address = 18446744072113252104
-*/
-
-/*
-crash> p *((struct module *) 0xffffffffa0db5440)->notes_attrs
-$7 = {
-dir = 0xffff8801991745c0, 
-notes = 1, 
-attrs = 0xffff8801021ab4d0
-}
-crash> p ((struct module *) 0xffffffffa0db5440)->notes_attrs->attrs
-$8 = 0xffff8801021ab4d0
-crash> p *((struct module *) 0xffffffffa0db5440)->notes_attrs->attrs
-$9 = {
-attr = {
-name = 0xffff88011400ab60 ".note.gnu.build-id", 
-owner = 0x0, 
-mode = 292
-}, 
-size = 36, 
-private = 0xffffffffa0da6708, 
-read = 0xffffffff810ab820 <module_notes_read>, 
-write = 0, 
-mmap = 0
-}
-*/
 }
 
 /* 
@@ -2253,16 +2248,16 @@ char *xmod_help[] = {
 	NULL,
 };
 
-static struct command_table_entry xmod_entry[] = {
+static struct command_table_entry xbt_entry[] = {
+	{
+		.name = "xbt",
+		.func = xbt_func,
+		/* FIXME .help_data = xbt_help, */
+	},
 	{
 		.name = "xmod",
 		.func = xmod_func,
 		.help_data = xmod_help,
-	},
-	{
-		.name = "xbt",
-		.func = xbt_func,
-		/* .help_data = xbt_help, */
 	},
 	{
 		.name = NULL,
@@ -2272,11 +2267,10 @@ static struct command_table_entry xmod_entry[] = {
 void __attribute__((constructor))
 xmod_init(void)
 { 
-	register_extension(xmod_entry);
+	register_extension(xbt_entry);
 }
 
 void __attribute__((destructor))
 xmod_fini(void)
 {
-	/* Uludag GAZOZ! */
 }
