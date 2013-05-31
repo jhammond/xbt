@@ -10,8 +10,6 @@
 #include "xbt.h"
 #include "list.h"
 
-FILE *xbt_file;
-
 /* BEGIN copy from crash-7.0.0/x86_64.c */
 
 #define EFRAME_PRINT  (0x1)
@@ -1226,6 +1224,8 @@ static int xbt_add_frame(struct list_head *xf_list,
 	int i; 
 	int rc;
 
+	/* FIXME Review control flow. */
+
 	xf = malloc(sizeof(*xf));
 	if (xf == NULL) {
 		goto out;
@@ -1930,12 +1930,17 @@ static int xbt_crash_mem_ref(struct xbt_frame *xf, void *dest,
 	return rc;
 }
 
-void xbt_restore_parent_regs(struct xbt_frame *xp, struct xbt_frame *xc)
+void xbt_frame_restore_regs(struct xbt_frame *xp)
 {
+	struct xbt_frame *xc;
 	unsigned long start;
 	unsigned char prolog[64];
 	long rsp_off;
 	int i;
+
+	xc = xf_child(xp);
+	if (xc == NULL)
+		return;
 
 	start = xc->xf_func_start;
 	if (start == 0)
@@ -1955,6 +1960,7 @@ void xbt_restore_parent_regs(struct xbt_frame *xp, struct xbt_frame *xc)
 	rsp_off = - 2 * sizeof(unsigned long);
 
 	/* Semibackwards nonportable prolog disassembler. */
+	/* 30 minute works for me version. */
 	while (i + 8 < sizeof(prolog)) {
 		long off = LONG_MIN;
 		unsigned int ri;
@@ -2064,8 +2070,6 @@ void xbt_func(void)
 	char *rip_sym;
 	LIST_HEAD(xf_list);
 
-	xbt_file = fp;
-
 	xbt_trace("stack start %#016lx, end %#016lx", bt->stackbase, bt->stacktop);
 
 	fill_stackbuf(bt);
@@ -2088,12 +2092,16 @@ void xbt_func(void)
 
 	xbt_back_trace_to_xf_list(bt, &xf_list);
 
-	/* fi_start includes the pushed rip */
-
 	struct xbt_frame *xf;
 	list_for_each_entry(xf, &xf_list, xf_link) {
+		// Prev is child.  Next is parent.
+
+		if (xf->xf_link.prev != &xf_list)
+			xf->xf_has_child = true;
+
 		if (xf->xf_link.next != &xf_list) {
-			xf->xf_frame_end = xf_next(xf)->xf_frame_start;
+			xf->xf_has_parent = true;
+			xf->xf_frame_end = xf_parent(xf)->xf_frame_start;
 		} else {
 			xf->xf_frame_end = xf->xf_frame_start;
 		}
@@ -2106,49 +2114,39 @@ void xbt_func(void)
 		xf->xf_stack_start = bt->stackbase;
 		xf->xf_stack_end = bt->stacktop;
 		xf->xf_mem_ref = &xbt_crash_mem_ref;
-
-		/* FIXME More init. */
 	}
 
 	list_for_each_entry(xf, &xf_list, xf_link)
-		// TODO Need xf_has_parent(), xf_parent(). */
-		if (xf->xf_link.next != &xf_list)
-			xbt_restore_parent_regs(xf_next(xf), xf);
+		xbt_frame_restore_regs(xf);
 
 	list_for_each_entry(xf, &xf_list, xf_link) {
-		xbt_trace("level %d\n"
-			  "###\tmod %s, name %s, RIP %#016lx\n"
-			  "###\tframe start %#016lx, end %#016lx, size %lu, *base %#016lx",
-			  // "###\tstack start %#016lx, end %#016lx, size %lu, *base %#016lx\n",
+		xbt_print("#%d\n"
+			  "\tmod %s, name %s, RIP %#016lx\n"
+			  "\tframe start %#016lx, end %#016lx, *base %#016lx\n",
 			  xf->xf_level,
 			  xf->xf_mod_name != NULL ? xf->xf_mod_name : "NONE",
 			  xf->xf_func_name != NULL ? xf->xf_func_name : "NONE",
 			  xf->xf_rip,
 			  xf->xf_frame_start, xf->xf_frame_end,
-			  xf->xf_frame_end - xf->xf_frame_start,
-			  *(ulong *)xf->xf_frame_base
-			  // xf->xf_stack_start, xf->xf_stack_end,
-			  // xf->xf_stack_end - xf->xf_stack_start,
-			  // *(ulong *)xf->xf_stack_base
-			);
+			  *(ulong *)xf->xf_frame_base);
 
-#define SHOW_REG(r)						\
+#define XBT_TRACE_REG(r)					\
 		if (xf->xf_reg_mask & (1UL << (r)))		\
-			xbt_trace("%s %lx", #r, xf->xf_reg[r])
+			xbt_print("\t%s = %lx\n", #r, xf->xf_reg[r])
 
-		SHOW_REG(XBT_RBX);
-		SHOW_REG(XBT_R12);
-		SHOW_REG(XBT_R13);
-		SHOW_REG(XBT_R14);
-		SHOW_REG(XBT_R15);
+		XBT_TRACE_REG(XBT_RBX);
+		XBT_TRACE_REG(XBT_R12);
+		XBT_TRACE_REG(XBT_R13);
+		XBT_TRACE_REG(XBT_R14);
+		XBT_TRACE_REG(XBT_R15);
 
-		if (xf->xf_frame_start != xf->xf_frame_end)
-			xbt_frame_print(fp, xf);
+		// if (xf->xf_frame_start != xf->xf_frame_end)
+		xbt_frame_print(fp, xf);
 
-		xbt_trace("");
+		xbt_print("\n");
 	}
 out:
-	xbt_file = NULL;
+	((void) 0);
 }
 
 void xmod_func(void)

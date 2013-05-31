@@ -155,6 +155,11 @@ next_cu:
 			goto out;
 		}
 
+#if 0
+		xbt_trace("DIE %"PRIx64" level %d, tag %d\n",
+			  (uint64_t) offset, level, tag);
+#endif
+
 		if (level == 1 && tag != DW_TAG_subprogram)
 			goto next_die;  /* Optimization. */
 
@@ -244,10 +249,6 @@ next_cu:
 		}
 
 #if 0
-		xbt_trace(" [%6"PRIx64"]  %*s%d\n",
-		       (uint64_t) offset, (int) (level * 2), "", tag);
-#endif
-#if 0
 		dwarf_getattrs(&dies[level], attr_callback, NULL, 0);
 #endif
 		/* Make room for the next level's DIE.  */
@@ -267,6 +268,7 @@ next_cu:
 			while ((c = dwarf_siblingof(&dies[level], &dies[level])) == 1)
 				if (level-- == 0)
 					break;
+
 			if (c == -1) {
 				xbt_error("cannot get next DIE: %s", dwarf_errmsg(-1));
 				goto out;
@@ -279,6 +281,7 @@ next_cu:
 		goto next_cu;
 out:
 	free(dies);
+	xbt_trace("OUT\n");
 
 	return DWARF_CB_OK;
 }

@@ -9,31 +9,45 @@
 
 #define XBT_ARRAY_LENGTH(a) (sizeof(a) / sizeof((a)[0]))
 
+#if 0
 #define xbt_trace(fmt, args...) \
-	fprintf(stderr, "### %s:%d: "fmt"\n", __func__, __LINE__, ##args)
+	fprintf(stderr, "# %s:%d: "fmt"\n", __func__, __LINE__, ##args)
 
 #define xbt_error(fmt, args...) \
-	fprintf(stderr, "### %s:%d: "fmt"\n", __func__, __LINE__, ##args)
+	fprintf(stderr, "# %s:%d: "fmt"\n", __func__, __LINE__, ##args)
+
+#endif
 
 #define xbt_assert(x) (assert(x))
 
-#if 0
 /* FIXME */
 #ifndef CRASHDEBUG
 #include <crash/defs.h>
 #endif
 
-extern FILE *xbt_file;
-
 #undef xbt_trace
 #undef xbt_error
 
-#define xbt_trace(fmt, args...)					\
-	__error(INFO, "### %s:%d: "fmt"\n", __func__, __LINE__, ##args)
+#define xbt_debug 0
 
-#define xbt_error(fmt, args...)					\
-	__error(INFO, "### %s:%d: "fmt"\n", __func__, __LINE__, ##args)
-#endif
+#define xbt_trace(fmt, args...)						\
+	do {								\
+		if (xbt_debug)						\
+			fprintf(stderr, "# %s:%d: "fmt"\n",		\
+				__func__, __LINE__, ##args);		\
+	} while (0)
+
+#define xbt_error(fmt, args...)						\
+	do {								\
+		xbt_trace(fmt, ##args);					\
+		__error(INFO, fmt"\n", ##args);				\
+	} while (0)
+
+#define xbt_print(fmt, args...)			\
+	do {					\
+		xbt_trace(fmt, ##args);		\
+		fprintf(fp, fmt, ##args);	\
+	} while (0)
 
 #define XBT_NR_REGS 16
 
@@ -98,7 +112,9 @@ struct xbt_frame {
 	char		       *xf_mod_debuginfo_path;
 
 	unsigned long		xf_is_exception:1,
-				xf_is_irq:1;
+				xf_is_irq:1,
+				xf_has_child:1,
+				xf_has_parent:1;
 
 	int (*xf_reg_ref)(struct xbt_frame *,
 			  unsigned long * /* dest */,
@@ -112,8 +128,19 @@ struct xbt_frame {
 			  size_t /* size */);
 };
 
-static inline struct xbt_frame *xf_next(struct xbt_frame *xf)
+static inline struct xbt_frame *xf_child(struct xbt_frame *xf)
 {
+	if (!xf->xf_has_child)
+		return NULL;
+
+	return list_entry(xf->xf_link.prev, struct xbt_frame, xf_link);
+}
+
+static inline struct xbt_frame *xf_parent(struct xbt_frame *xf)
+{
+	if (!xf->xf_has_parent)
+		return NULL;
+
 	return list_entry(xf->xf_link.next, struct xbt_frame, xf_link);
 }
 
@@ -169,8 +196,12 @@ static inline int xf_mem_ref(struct xbt_frame *xf,
 	if (xf->xf_mem_ref != NULL)
 		return xf->xf_mem_ref(xf, dest, addr, size);
 
+	// TODO Try converting to stack reference.
+
 	return -XBT_UNSUPP;
 }
+
+void xbt_frame_restore_regs(struct xbt_frame *xp);
 
 void xbt_frame_print(FILE *file, struct xbt_frame *xf);
 

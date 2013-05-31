@@ -27,6 +27,8 @@ int xbt_dwarf_eval(struct xbt_frame *xf,
 	bool is_value = false;
 	int rc;
 
+	xbt_trace("ENTRY %s", obj_name);
+
 	memset(obj, 0, obj_size);
 	memset(bit_mask, 0, obj_size);
 
@@ -37,7 +39,7 @@ int xbt_dwarf_eval(struct xbt_frame *xf,
 		if (xbt_eval_abort_on_error && _err != 0)		\
 			abort();					\
 		rc = _err;						\
-		xbt_error("OUT obj %s, K %zu, rc %d", obj_name, K, rc);	\
+		xbt_trace("OUT obj %s, K %zu, rc %d", obj_name, K, rc);	\
 		goto out;						\
 	} while (0)
 
@@ -146,6 +148,8 @@ int xbt_dwarf_eval(struct xbt_frame *xf,
 			PUSH(u - DW_OP_lit0);
 			break;
 		case DW_OP_addr:
+			/* FIXME Addr needs relocation */
+			OUT(-XBT_EVAL_TODO);
 			PUSH(n0);
 			break;
 		case DW_OP_const1u:
@@ -555,7 +559,9 @@ int xbt_dwarf_eval(struct xbt_frame *xf,
 
 			if (IS_EMPTY()) {
 				/* Empty location. */
-				xbt_trace("%s[%zu, %zu) location = NONE, value = NONE",
+				xbt_print("\t&%s[%zu, %zu) = NONE\n"
+					  "\t%s[%zu, %zu) = NONE\n",
+					  obj_name, bit_off, bit_off + 8 * n0,
 					  obj_name, bit_off, bit_off + 8 * n0);
 			} else if (is_value) {
 				/* Virtual location. */
@@ -564,26 +570,26 @@ int xbt_dwarf_eval(struct xbt_frame *xf,
 				memcpy(&v0, &t0, n0);
 				have_value = true;
 
-				xbt_trace("%s[%zu, %zu) location = NONE",
+				xbt_print("\t&%s[%zu, %zu) = NONE\n",
 					  obj_name, bit_off, bit_off + 8 * n0);
 			} else {
 				/* Real location. */
 				int mem_rc;
 
 				t0 = POP();
-				xbt_trace("%s[%zu, %zu) location = %lx",
+				xbt_print("\t&%s[%zu, %zu) = %lx\n",
 					  obj_name, bit_off, bit_off + 8 * n0, t0);
 
 				mem_rc = xf_mem_ref(xf, &v0, t0, n0);
 				if (mem_rc != 0)
-					xbt_trace("%s[%zu, %zu) cannot access %lx: rc = %d",
+					xbt_error("\t&%s[%zu, %zu) = %lx inaccessible: rc = %d",
 						  obj_name, bit_off, bit_off + 8 * n0, t0, mem_rc);
 				else
 					have_value = true;
 			}
 
 			if (have_value) {
-				xbt_trace("%s[%zu, %zu) value = %lx",
+				xbt_print("\t%s[%zu, %zu) = %lx\n",
 					  obj_name, bit_off, bit_off + 8 * n0, v0);
 
 				memcpy(obj + bit_off / 8, &v0, n0);
@@ -619,23 +625,22 @@ int xbt_dwarf_eval(struct xbt_frame *xf,
 
 		t0 = POP();
 		memcpy(obj, &t0, obj_size);
-		xbt_trace("%s value = %lx", obj_name, t0);
+		xbt_print("\t%s = %lx\n", obj_name, t0);
 	} else {
-		Dwarf_Word t0, v0;
+		Dwarf_Word t0;
 		int mem_rc;
 
 		t0 = POP();
-		xbt_trace("%s location = %lx", obj_name, t0);
+		xbt_print("\t&%s = %lx\n", obj_name, t0);
 
-		mem_rc = xf_mem_ref(xf, &v0, t0, sizeof(v0));
+		mem_rc = xf_mem_ref(xf, obj, t0, obj_size);
 		if (mem_rc != 0) {
-			xbt_trace("%s cannot access %lx: rc = %d",
+			xbt_error("\t&%s = %lx inaccessible: rc = %d",
 				  obj_name, t0, mem_rc);
 		} else {
 			/* FIXME */
-			memcpy(obj, &v0, obj_size < sizeof(v0) ?
-			       obj_size : sizeof(v0));
-			xbt_trace("%s value = %lx", obj_name, v0);
+			xbt_print("\t%s = %lx ...\n",
+				  obj_name, *(Dwarf_Word *)obj);
 		}
 	}
 	OUT(XBT_OK);
