@@ -1,3 +1,26 @@
+/* xbt_frame_print.c -- DWARF based frame reader/printer.
+ *
+ * This file is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This file is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Copyright (C) 1999-2013 Red Hat, Inc.
+ * Copyright (c) 2013 Intel Corporation.
+ *
+ * Portions of this file are based on elfutils-0.155/src/readelf.c
+ * written by by Ulrich Drepper <drepper@redhat.com>, 1999.
+ *
+ * Author: John L. Hammond <john.hammond@intel.com>
+ */
 #include <stdbool.h>
 #include <inttypes.h>
 #include <stdlib.h>
@@ -15,7 +38,13 @@
 #include <limits.h>
 #include "xbt.h"
 
-/* Temp. Returns malloced string. */
+/*
+ * mod_debuginfo_path() -- find debuginfo for module mod_name.
+ * Temporary function. Returns malloced string.
+ *
+ * TODO Handle build-ids.
+ * TODO Interpret MODULE_PATH as a colon separated list.
+ */
 static char *mod_debuginfo_path(const char *mod_name) /* foo */
 {
 	const char *mod_dir_path = getenv("MODULE_PATH");
@@ -234,13 +263,14 @@ next_cu:
 			}
 
 			for (i = 0; i < nr_locs; i++) {
-				Dwarf_Word obj[512];
+				Dwarf_Word obj[512]; /* FIXME */
 				Dwarf_Word bit_mask[512];
 
 				Dwarf_Op *op = expr[i];
 				size_t len = expr_len[i];
 
-				xbt_dwarf_eval(xf, dwarf_diename(die), obj, bit_mask, sizeof(obj),
+				xbt_dwarf_eval(xf, dwarf_diename(die),
+					       obj, bit_mask, sizeof(obj),
 					       op, len);
 				/* FIXME Break on first success. */
 			}
@@ -248,9 +278,6 @@ next_cu:
 			goto next_die;
 		}
 
-#if 0
-		dwarf_getattrs(&dies[level], attr_callback, NULL, 0);
-#endif
 		/* Make room for the next level's DIE.  */
 		if (level + 1 == maxdies)
 			dies = realloc(dies, (maxdies += 10) * sizeof(dies[0]));
@@ -259,11 +286,9 @@ next_cu:
 		if (c < 0) {
 			xbt_error("cannot get next DIE: %s", dwarf_errmsg(-1));
 			goto out;
-		} else if (c == 0) {
-			/* Found child. */
+		} else if (c == 0) { /* Found child. */
 			level++;
-		} else {
-			/* No children. */
+		} else { /* No children. */
 		next_die:
 			while ((c = dwarf_siblingof(&dies[level], &dies[level])) == 1)
 				if (level-- == 0)
@@ -337,16 +362,20 @@ void xbt_frame_print(FILE *file, struct xbt_frame *xf)
 	}
 	dwfl_fd = -1;
 
-	/* FIXME Cleanup. */
-
 	dwfl_report_end(dwfl, NULL, NULL);
 
+	/* FIXME Error reporting. */
 	dwfl_getmodules(dwfl, xbt_dwfl_module_cb, xf, 0 /* offset*/);
-	/* ... */
 out:
+	/* FIXME Cleanup. */
+
 	if (!(dwfl_fd < 0))
 		close(dwfl_fd);
 
 	if (dwfl != NULL)
 		dwfl_end(dwfl);
+
+	if (!(mod_fd < 0))
+		close(mod_fd);
+
 }
