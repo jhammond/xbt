@@ -218,7 +218,7 @@ next_cu:
 			if (high_pc == -1UL)
 				goto next_die;
 
-			if (!(low_pc <= pc && pc < high_pc))
+			if (!(low_pc <= pc && pc <= high_pc))
 				goto next_die;
 
 			xbt_trace("DIE subprogram %s, offset %lx, "
