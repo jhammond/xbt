@@ -162,6 +162,7 @@ static inline int xf_reg_ref(struct xbt_frame *xf,
 	return XBT_OK;
 }
 
+/* TODO Convert this to dest, addr, size. */
 static inline int xf_frame_ref(struct xbt_frame *xf,
 			       unsigned long *v,
 			       long offset)
@@ -196,7 +197,7 @@ static inline int xf_mem_ref(struct xbt_frame *xf,
 	if (xf->xf_mem_ref != NULL)
 		return xf->xf_mem_ref(xf, dest, addr, size);
 
-	// TODO Try converting to stack reference.
+	/* TODO Try converting to stack reference. */
 
 	return -XBT_UNSUPP;
 }
