@@ -235,6 +235,8 @@ next_cu:
 			Dwarf_Op *expr[nr_exprs];
 			size_t expr_len[nr_exprs];
 
+			/* TODO Use DW_AT_decl_file DW_AT_decl_line DW_AT_type. */
+
 			tag_name = (tag == DW_TAG_formal_parameter) ?
 				"parm" : "var";
 
@@ -255,7 +257,6 @@ next_cu:
 				  dwarf_diename(die),
 				  dwarf_dieoffset(die),
 				  nr_locs);
-			// DW_AT_decl_file DW_AT_decl_line DW_AT_type
 
 			if (nr_locs < 0) {
 				/* ... */
