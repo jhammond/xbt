@@ -1,3 +1,22 @@
+/* xbt_eval.c -- print objects/variables
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation; either version 2 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ * 02110-1301, USA.
+ *
+ * Author: John L. Hammond <john.hammond@intel.com>
+ */
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,7 +25,7 @@
 #include <dwarf.h>
 #include <elfutils/libdw.h>
 #include <assert.h>
-#include <limits.h> // LONG_MIN
+#include <limits.h> /* LONG_MIN */
 #include "xbt.h"
 
 #define DWARF_SWORD_MIN LONG_MIN /* XXX? */
@@ -28,6 +47,8 @@ int xbt_dwarf_eval(struct xbt_frame *xf,
 	int rc;
 
 	xbt_trace("ENTRY %s", obj_name);
+
+	assert(sizeof(DWARF_SWORD_MIN) == sizeof(Dwarf_Sword));
 
 	memset(obj, 0, obj_size);
 	memset(bit_mask, 0, obj_size);
@@ -148,7 +169,7 @@ int xbt_dwarf_eval(struct xbt_frame *xf,
 			PUSH(u - DW_OP_lit0);
 			break;
 		case DW_OP_addr:
-			/* FIXME Addr needs relocation */
+			/* FIXME Addr needs relocation. */
 			OUT(-XBT_EVAL_TODO);
 			PUSH(n0);
 			break;
@@ -298,6 +319,7 @@ int xbt_dwarf_eval(struct xbt_frame *xf,
 
 			t0 = POP();
 			t1 = POP();
+
 			/* TODO CHECKME */
 			REQ(t0 != 0 && (t0 != -1 || t1 != DWARF_SWORD_MIN),
 			    -XBT_EVAL_DIV_ERR);
@@ -554,11 +576,13 @@ int xbt_dwarf_eval(struct xbt_frame *xf,
 			bool have_value = false;
 
 			/* n0 is size in bytes. */
-			REQ(bit_off % 8 == 0, -XBT_BAD_OP); /* XXX Safe? */
+
+			/* XXX Is this safe to assume? */
+			REQ(bit_off % 8 == 0, -XBT_BAD_OP);
 			REQ(bit_off + 8 * n0 <= 8 * obj_size, -XBT_BAD_OP);
 
 			if (IS_EMPTY()) {
-				/* Empty location. */
+				/* Empty stack means 'empty location.' */
 				xbt_print("\t&%s[%zu, %zu) = NONE\n"
 					  "\t%s[%zu, %zu) = NONE\n",
 					  obj_name, bit_off, bit_off + 8 * n0,
@@ -638,7 +662,7 @@ int xbt_dwarf_eval(struct xbt_frame *xf,
 			xbt_error("\t&%s = %lx inaccessible: rc = %d",
 				  obj_name, t0, mem_rc);
 		} else {
-			/* FIXME */
+			/* FIXME Print all of obj. */
 			xbt_print("\t%s = %lx ...\n",
 				  obj_name, *(Dwarf_Word *)obj);
 		}
