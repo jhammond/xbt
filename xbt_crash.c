@@ -14,7 +14,7 @@
  * Copyright (C) 2004-2013 Red Hat, Inc. All rights reserved.
  * Copyright (c) 2013 Intel Corporation.
  *
- * Portions of this file adapted from
+ * Portions of this file are adapted from
  * x86_64_low_budget_back_trace_cmd() and supporting functions from
  * crash-7.0.0/x86_64.c.
  *
