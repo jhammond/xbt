@@ -1,31 +1,19 @@
-Tested with:
-crash-6.1.0-1.el6.x86_64
-elfutils-libelf-0.152-1.el6.x86_64
-elfutils-devel-0.152-1.el6.x86_64
-elfutils-libelf-devel-0.152-1.el6.x86_64
-elfutils-libs-0.152-1.el6.x86_64
-elfutils-0.152-1.el6.x86_64
+xbt
+===
+
+xbt is an extension to the crash utility which displays a symbolic
+backtrace. It supports x86_64 kdump images. For information about the
+crash utility see http://people.redhat.com/anderson/
+
+* HOWTO
+	Set MODULE_PATH to a directory (hierarchy) containing the
+	unstripped kernel modules used in the image.
 
 $ make
-$ MODULE_PATH=/root/lustre-release/ crash ...
+$ export MODULE_PATH=/root/lustre-release
+$ crash /usr/lib/debug/lib/modules/.../vmlinux /var/crash/.../vmcore
 crash> extend xbt.so
 crash> xbt
- #0 [ffff8801361cf770] schedule at ffffffff814eb4d2
-    ffff8801361cf778: ffff8801361cf910 ffff8801361cf8e0 
-    ffff8801361cf788: ffffffff810b8995 
- #1 [ffff8801361cf788] crash_save_cpu at ffffffff810b8995
-...
-#17 [ffff8801361cfeb8] ptlrpc_main at ffffffffa062771e [ptlrpc]
-    ffff8801361cfec0: ffff880100000000 ffff8801374b1480 
-    ffff8801361cfed0: 0000000000000000 ffff880137a91080 
-    ffff8801361cfee0: 0000002400000000 ffff8801374b1468 
-    ffff8801361cfef0: ffff8801374b1448 ffff8801361a1af8 
-    ffff8801361cff00: ffff880136197c80 ffff8801374b1430 
-    ffff8801361cff10: ffff880197047140 ffff8801991f8080 
-    ffff8801361cff20: 0000000000000000 0000000000000000 
-    ffff8801361cff30: ffffffffa0626c50 ffff8801361a1ac0 
-    ffff8801361cff40: ffff880139ce76b8 ffffffff8100c0ca 
-#18 [ffff8801361cff48] kernel_thread at ffffffff8100c0ca
 #0
         mod NONE, name schedule, RIP 0xffffffff814eb4d2
         frame start 0xffff8801361cf770, end 0xffff8801361cf788, *base 0xffff8801361cf8e0
@@ -127,59 +115,65 @@ xbt: var mdd, offset 27588 has no location
         repbody = ffff8801361d1000 ...
         som_au = 0
 xbt: var rc2, offset 91b5b has no location
+...
 
-#11
-        mod mdt, name mdt_reint_rec, RIP 0xffffffffa0b0e891
-        frame start 0xffff8801361cfcd8, end 0xffff8801361cfcf8, *base 0xffff8801361cfd30
-        XBT_RBX = ffff8801361d1000
-        XBT_R12 = 0
-        XBT_R13 = 1
-        XBT_R14 = 0
-        XBT_R15 = 0
-        info = ffff8801361d1000
-        lhc = 0
 
-#12
-        mod mdt, name mdt_reint_internal, RIP 0xffffffffa0af3b03
-        frame start 0xffff8801361cfcf8, end 0xffff8801361cfd38, *base 0xffff8801361cfd50
+* Make should just work on CentOS 6.3 if you have the following RPMs
+  installed:
+	crash
+	crash-devel
+	elfutils
+	elfutils-libs
+	elfutils-devel
+	elfutils-libelf
+	elfutils-libelf-devel
 
-#13
-        mod mdt, name mdt_reint, RIP 0xffffffffa0af3e04
-        frame start 0xffff8801361cfd38, end 0xffff8801361cfd58, *base 0xffff8801361cfda0
-        XBT_RBX = ffff88011c513000
-        XBT_R12 = ffffffffa0b59d58
-        XBT_R13 = 0
-        XBT_R14 = 8
-        XBT_R15 = ffff8801361cfd50
-        info = ffff88011c513000
+* Tested with:
+	crash-6.1.0-1.el6.x86_64
+	crash-devel-6.1.0-1.el6.x86_64
+	crash-gcore-command-1.0-3.el6.x86_64
+	crash-trace-command-1.0-4.el6.x86_64
+	elfutils-0.152-1.el6.x86_64
+	elfutils-libelf-0.152-1.el6.x86_64
+	elfutils-devel-0.152-1.el6.x86_64
+	elfutils-libelf-devel-0.152-1.el6.x86_64
+	elfutils-libs-0.152-1.el6.x86_64
 
-#14
-        mod mdt, name mdt_handle_common, RIP 0xffffffffa0af8ab8
-        frame start 0xffff8801361cfd58, end 0xffff8801361cfda8, *base 0xffff8801361cfdb0
-        XBT_RBX = ffff8801361d1000
-        &supported = ffff8801361cfd60
-        supported = 10 ...
-        info = ffff8801361d1000
+* TODOs
+	Use kernel debuginfo too.
 
-#15
-        mod mdt, name mds_regular_handle, RIP 0xffffffffa0b32165
-        frame start 0xffff8801361cfda8, end 0xffff8801361cfdb8, *base 0xffff8801361cfeb0
-        XBT_RBX = ffff88011c513000
-        XBT_R12 = ffff880137a91080
-        XBT_R13 = ffff8801374b1400
-        XBT_R14 = ffff88012653304c
-        XBT_R15 = ffff88011c513340
+	Crash may already have loaded debuginfo (partial?) for certain
+	modules can that be reused?
 
-#16
-        mod ptlrpc, name ptlrpc_server_handle_request, RIP 0xffffffffa0626388
-        frame start 0xffff8801361cfdb8, end 0xffff8801361cfeb8, *base 0xffff8801361cff40
-        &work_start = ffff8801361cfe68
-        work_start = ffffffff81052223 ...
-        &work_end = ffff8801361cfe58
-        work_end = 51a4cc7f12470 ...
+	Use build-ids to locate and/or validate debuginfo.
 
-#17
-        mod ptlrpc, name ptlrpc_main, RIP 0xffffffffa062771e
+	Improve visual formatting.
 
-Lots of TODOs and FIXMEs.  Based on x86_64_low_bugdet_back_trace()
-from crash-7.0.0/x86_64.c and readelf.c from elfutils source.
+	Add option to disable register restoring.
+
+	Add options to select specific frames, objects, variables.
+
+	Improve display of composite objects.
+
+	Add a crash-less mode.  You build and distribute modules.
+	Someone else uses your modules and sends you the output of 'bt
+	-fs' , you parse it using code to be written (the crash-less
+	driver), and existing code creates a symbolic trace from that.
+
+* FIXMEs
+	Lots.
+
+* Portions based on the 'bt' backend x86_64_low_bugdet_back_trace()
+  from crash-7.0.0/x86_64.c.
+
+* Portions based on readelf.c from the elfutils source (which is not
+  the binutils readelf that you know and love, but was much better
+  suited for these purposes).
+
+* Uses list.h from some version of linux.
+
+* Maybe there's an easier way to do this.  Probably there are lots of
+  bugs.  In either case please send the emails to:
+
+	John L. Hammond
+	john.hammond@intel.com
