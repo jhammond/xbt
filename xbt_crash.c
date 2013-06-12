@@ -25,11 +25,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <malloc.h>
+#include <getopt.h>
 #ifndef CRASHDEBUG /* No include guard in crash/defs.h. */
 #include <crash/defs.h>
 #endif
 #include "xbt.h"
 #include "list.h"
+
+int xbt_debug;
 
 /* BEGIN copy from crash-7.0.0/x86_64.c */
 
@@ -2110,6 +2113,21 @@ void xbt_func(void)
 	 * TODO Add option to select a specific object/variable.
 	 * TODO Make frame numbering/display agree with 'bt -f'.
 	 */
+	int c;
+	while ((c = getopt(argcnt, args, "d")) != -1) {
+		switch (c) {
+		case 'd':
+			/* FIXME Global. */
+			xbt_debug = 1;
+			break;
+		default:
+			xbt_error("Usage: xbt [OPTION]... [PID]\n"
+				  "\n"
+				  "  -d, --debug   enable trace\n");
+			goto out;
+		}
+	}
+
 	xbt_trace("stack start %#016lx, end %#016lx", bt->stackbase, bt->stacktop);
 
 	fill_stackbuf(bt);
@@ -2186,7 +2204,8 @@ void xbt_func(void)
 	}
 out:
 	/* FIXME Cleanup. */
-	((void) 0);
+
+	xbt_debug = 0;
 }
 
 void xmod_func(void)

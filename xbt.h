@@ -28,7 +28,7 @@
 #undef xbt_trace
 #undef xbt_error
 
-#define xbt_debug 0
+extern int xbt_debug;
 
 #define xbt_trace(fmt, args...)						\
 	do {								\
@@ -44,10 +44,7 @@
 	} while (0)
 
 #define xbt_print(fmt, args...)			\
-	do {					\
-		xbt_trace(fmt, ##args);		\
-		fprintf(fp, fmt, ##args);	\
-	} while (0)
+	fprintf(fp, fmt, ##args)
 
 #define XBT_NR_REGS 16
 
