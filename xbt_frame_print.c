@@ -45,10 +45,12 @@
  * TODO Handle build-ids.
  * TODO Interpret MODULE_PATH as a colon separated list.
  */
-static char *mod_debuginfo_path(const char *mod_name) /* foo */
+static char *mod_debuginfo_path(const char *mod_name) /* NULL or foo */
 {
-	const char *mod_dir_path = getenv("MODULE_PATH");
-	char ko_name[PATH_MAX]; /* foo.ko */
+	const char *search_list_env = getenv("MODULE_PATH");
+	char *search_list = NULL;
+	char *search_list_pos, *search_dir = NULL;
+	char file_name[PATH_MAX]; /* vmlinux or foo.ko */
 	char *info_path = NULL;
 
 	int ftw_cb(const char *path, const struct stat *sb, int type)
@@ -56,7 +58,11 @@ static char *mod_debuginfo_path(const char *mod_name) /* foo */
 		if (type != FTW_F)
 			return 0;
 
-		if (strcmp(ko_name, basename(path)) == 0) {
+		if (strcmp(file_name, basename(path)) == 0) {
+			xbt_trace("found path %s, mod_name %s, search_dir %s",
+				  path,
+				  mod_name != NULL ? mod_name : "NONE",
+				  search_dir);
 			info_path = strdup(path);
 			return 1;
 		}
@@ -64,11 +70,29 @@ static char *mod_debuginfo_path(const char *mod_name) /* foo */
 		return 0;
 	}
 
-	if (mod_dir_path == NULL)
-		return NULL;
+	if (mod_name == NULL)
+		snprintf(file_name, sizeof(file_name), "vmlinux");
+	else
+		snprintf(file_name, sizeof(file_name), "%s.ko", mod_name);
 
-	snprintf(ko_name, sizeof(ko_name), "%s.ko", mod_name);
-	ftw(mod_dir_path, &ftw_cb, 4);
+	if (search_list_env == NULL) {
+		/* FIXME */
+		goto out;
+	}
+
+	search_list = strdup(search_list_env);
+	if (search_list == NULL) {
+		/* ... */
+		goto out;
+	}
+
+	search_list_pos = search_list;
+	while (info_path == NULL &&
+	       (search_dir = strsep(&search_list_pos, ":")) != NULL)
+		ftw(search_dir, &ftw_cb, 4);
+
+out:
+	free(search_list);
 
 	return info_path;
 }
@@ -99,11 +123,17 @@ static int xbt_dwfl_module_cb(Dwfl_Module *dwflmod,
 
 	Dwarf_Addr text_offset = xf->xf_text_offset;
 	const char *path = xf->xf_mod_debuginfo_path;
-	Dwarf_Addr pc;
+	Dwarf_Addr abs_pc = xf->xf_rip;
+	Dwarf_Addr rel_pc = 0;
+	bool dwarf_pc_is_absolute;
 
 	int rc = -1;
 
-	xbt_trace("path '%s', text_offset %lx", path, text_offset);
+	/* Kernel debuginfo has absolute high/low PCs. */
+	dwarf_pc_is_absolute = (xf->xf_mod == NULL);
+
+	xbt_trace("func '%s', text_offset %lx, path '%s'",
+		  xf->xf_func_name, text_offset, path);
 
 	dbg = dwfl_module_getdwarf(dwflmod, &dwbias);
 	if (dbg == NULL) {
@@ -173,7 +203,7 @@ next_cu:
 		}
 
 		if (level <= 1)
-			pc = -1;
+			rel_pc = -1;
 
 		die = &dies[level];
 		tag = dwarf_tag(die);
@@ -212,20 +242,27 @@ next_cu:
 			 * trying to relocate all of the DWARF
 			 * addresses. Assume a constant relocation
 			 * offset throughout this function. */
-			pc = text_offset - (rel_low_pc - low_pc);
+			rel_pc = text_offset - (rel_low_pc - low_pc);
 
 			dwarf_highpc(die, &high_pc);
 			if (high_pc == -1UL)
 				goto next_die;
 
-			if (!(low_pc <= pc && pc <= high_pc))
-				goto next_die;
+			if (dwarf_pc_is_absolute) {
+				if (!(low_pc <= abs_pc && abs_pc <= high_pc))
+					goto next_die;
+			} else {
+				if (!(low_pc <= rel_pc && rel_pc <= high_pc))
+					goto next_die;
+			}
 
 			xbt_trace("DIE subprogram %s, offset %lx, "
-				  "pc %#lx, low_pc %#lx, high_pc %#lx",
+				  "abs_pc %#lx, rel_pc %#lx, "
+				  "low_pc %#lx, high_pc %#lx",
 				  dwarf_diename(die),
 				  dwarf_dieoffset(die),
-				  (ulong) pc, (ulong)low_pc, (ulong)high_pc);
+				  (ulong)abs_pc, (ulong)rel_pc,
+				  (ulong)low_pc, (ulong)high_pc);
 
 		} else if (tag == DW_TAG_formal_parameter ||
 			   tag == DW_TAG_variable) {
@@ -234,6 +271,7 @@ next_cu:
 			size_t nr_exprs = 256;
 			Dwarf_Op *expr[nr_exprs];
 			size_t expr_len[nr_exprs];
+			Dwarf_Addr pc = dwarf_pc_is_absolute ? abs_pc : rel_pc;
 
 			/* TODO Use DW_AT_decl_file DW_AT_decl_line DW_AT_type. */
 
@@ -242,7 +280,8 @@ next_cu:
 
 			loc_attr = dwarf_attr(die, DW_AT_location, &loc_attr_mem);
 			if (loc_attr == NULL) {
-				xbt_error("%s %s, offset %lx has no location",
+				/* FIXME What's happening here? */
+				xbt_trace("%s %s, offset %lx has no location",
 					  tag_name,
 					  dwarf_diename(die),
 					  dwarf_dieoffset(die));
@@ -276,7 +315,7 @@ next_cu:
 				/* FIXME Break on first success. */
 			}
 		} else {
-			goto next_die;
+			/* Nothing. */
 		}
 
 		/* Make room for the next level's DIE.  */
@@ -320,13 +359,10 @@ void xbt_frame_print(FILE *file, struct xbt_frame *xf)
 	Dwfl *dwfl = NULL;
 	int dwfl_fd = -1;
 
-	if (xf->xf_mod_name == NULL)
-		goto out;
-
 	mod_path = xf->xf_mod_debuginfo_path = mod_debuginfo_path(xf->xf_mod_name);
 	if (mod_path == NULL) {
 		xbt_error("cannot find debuginfo for module '%s'",
-			  xf->xf_mod_name);
+			  xf->xf_mod_name != NULL ? xf->xf_mod_name : "NONE");
 		goto out;
 	}
 

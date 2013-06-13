@@ -1359,8 +1359,10 @@ static int xbt_frame_add(struct list_head *xf_list,
 		xf->xf_mod = lm;
 		xf->xf_mod_name = lm->mod_name;
 		xf->xf_text_section = lm->mod_text_start;
-		xf->xf_text_offset = xf->xf_rip -  xf->xf_text_section;
+	} else {
+		xf->xf_text_section = symbol_value("_text");
 	}
+	xf->xf_text_offset = xf->xf_rip - xf->xf_text_section;
 
 	if (bt->flags & BT_FRAMESIZE_DISABLE)
 		fprintf(fp, " *");
