@@ -2086,6 +2086,8 @@ void xbt_frame_restore_regs(struct xbt_frame *xp)
 		if (off == LONG_MIN) {
 			off = rsp_off;
 			rsp_off -= sizeof(unsigned long);
+		} else {
+			off -= 8;
 		}
 
 		if (xf_frame_ref(xc, &xp->xf_reg[ri], off) < 0)
