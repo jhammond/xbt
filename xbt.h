@@ -106,7 +106,9 @@ struct xbt_frame {
 	/* Module data. */
 	struct load_module     *xf_mod;
 	const char	       *xf_mod_name;
-	char		       *xf_mod_debuginfo_path;
+
+	/* Debuginfo. */
+	char		       *xf_debuginfo_path;
 
 	unsigned long		xf_is_exception:1,
 				xf_is_irq:1,

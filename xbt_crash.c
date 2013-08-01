@@ -1358,8 +1358,16 @@ static int xbt_frame_add(struct list_head *xf_list,
 		fprintf(fp, " [%s]", lm->mod_name);
 		xf->xf_mod = lm;
 		xf->xf_mod_name = lm->mod_name;
+		if (strlen(lm->mod_namelist) > 0)
+			xf->xf_debuginfo_path = lm->mod_namelist;
+
 		xf->xf_text_section = lm->mod_text_start;
 	} else {
+		if (pc->debuginfo_file != NULL)
+			xf->xf_debuginfo_path = pc->debuginfo_file;
+		else
+			xf->xf_debuginfo_path = pc->namelist;
+
 		xf->xf_text_section = symbol_value("_text");
 	}
 	xf->xf_text_offset = xf->xf_rip - xf->xf_text_section;

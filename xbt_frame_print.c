@@ -39,15 +39,16 @@
 #include "xbt.h"
 
 /*
- * mod_debuginfo_path() -- find debuginfo for module mod_name.
+ * xbt_debuginfo_path() -- find debuginfo for module mod_name.
  * Temporary function. Returns malloced string.
  *
  * TODO Handle build-ids.
  * TODO Interpret MODULE_PATH as a colon separated list.
  */
-static char *mod_debuginfo_path(const char *mod_name) /* NULL or foo */
+ /* mod_name NULL or foo, env_name MODULE_PATH or CRASH_MODULE_PATH */
+static char *xbt_debuginfo_path(const char *mod_name, const char *env_name)
 {
-	const char *search_list_env = getenv("MODULE_PATH");
+	const char *search_list_env = getenv(env_name);
 	char *search_list = NULL;
 	char *search_list_pos, *search_dir = NULL;
 	char file_name[PATH_MAX]; /* vmlinux or foo.ko */
@@ -91,6 +92,10 @@ static char *mod_debuginfo_path(const char *mod_name) /* NULL or foo */
 	       (search_dir = strsep(&search_list_pos, ":")) != NULL)
 		ftw(search_dir, &ftw_cb, 4);
 
+	/* Try searching the whole thing. For Oleg. */
+	if (info_path == NULL)
+		ftw(search_list_env, &ftw_cb, 4);
+
 out:
 	free(search_list);
 
@@ -122,7 +127,7 @@ static int xbt_dwfl_module_cb(Dwfl_Module *dwflmod,
 	Dwarf_Die *dies = NULL;
 
 	Dwarf_Addr text_offset = xf->xf_text_offset;
-	const char *path = xf->xf_mod_debuginfo_path;
+	const char *path = xf->xf_debuginfo_path;
 	Dwarf_Addr abs_pc = xf->xf_rip;
 	Dwarf_Addr rel_pc = 0;
 	bool dwarf_pc_is_absolute;
@@ -354,23 +359,29 @@ out:
 /* FIXME Pass file to cb. */
 void xbt_frame_print(FILE *file, struct xbt_frame *xf)
 {
-	char *mod_path = NULL;
-	int mod_fd = -1;
+	char *path;
+	int fd = -1;
 	Dwfl *dwfl = NULL;
 	int dwfl_fd = -1;
 
-	mod_path = xf->xf_mod_debuginfo_path = mod_debuginfo_path(xf->xf_mod_name);
-	if (mod_path == NULL) {
+	path = xf->xf_debuginfo_path;
+	if (path == NULL)
+		path = xbt_debuginfo_path(xf->xf_mod_name, "MODULE_PATH");
+
+	if (path == NULL)
+		path = xbt_debuginfo_path(xf->xf_mod_name, "CRASH_MODULE_PATH");
+
+	if (path == NULL) {
 		xbt_error("cannot find debuginfo for module '%s'",
 			  xf->xf_mod_name != NULL ? xf->xf_mod_name : "NONE");
 		goto out;
 	}
 
-	mod_fd = open(mod_path, O_RDONLY);
-	if (mod_fd < 0) {
+	fd = open(path, O_RDONLY);
+	if (fd < 0) {
 		/* INFO? */
 		xbt_error("cannot open '%s': %s",
-			  mod_path, strerror(errno));
+			  path, strerror(errno));
 		goto out;
 	}
 
@@ -383,16 +394,16 @@ void xbt_frame_print(FILE *file, struct xbt_frame *xf)
 	if (dwfl == NULL)
 		goto out;
 
-	dwfl_fd = dup(mod_fd);
+	dwfl_fd = dup(fd);
 	if (dwfl_fd < 0) {
 		xbt_error("cannot dup fd %d for %s: %s",
-			  mod_fd, mod_path, strerror(errno));
+			  fd, path, strerror(errno));
 		goto out;
 	}
 
-	if (dwfl_report_offline(dwfl, mod_path, mod_path, dwfl_fd) == NULL) {
+	if (dwfl_report_offline(dwfl, path, path, dwfl_fd) == NULL) {
 		xbt_error("cannot load DWARF from '%s': %s",
-			  mod_path, strerror(errno)); /* XXX errno */
+			  path, strerror(errno)); /* XXX errno */
 		close(dwfl_fd);
 		dwfl_fd = -1;
 		goto out;
@@ -412,7 +423,6 @@ out:
 	if (dwfl != NULL)
 		dwfl_end(dwfl);
 
-	if (!(mod_fd < 0))
-		close(mod_fd);
-
+	if (!(fd < 0))
+		close(fd);
 }
