@@ -303,8 +303,8 @@ next_cu:
 			}
 
 			for (i = 0; i < nr_locs; i++) {
-				Dwarf_Word obj[512]; /* FIXME */
-				Dwarf_Word bit_mask[512];
+				Dwarf_Word obj[1]; /* FIXME */
+				Dwarf_Word bit_mask[1];
 
 				Dwarf_Op *op = expr[i];
 				size_t len = expr_len[i];
