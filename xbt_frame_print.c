@@ -38,68 +38,181 @@
 #include <limits.h>
 #include "xbt.h"
 
-/*
- * xbt_debuginfo_path() -- find debuginfo for module mod_name.
- * Temporary function. Returns malloced string.
- *
- * TODO Handle build-ids.
- * TODO Interpret MODULE_PATH as a colon separated list.
- */
- /* mod_name NULL or foo, env_name MODULE_PATH or CRASH_MODULE_PATH */
-static char *xbt_debuginfo_path(const char *mod_name, const char *env_name)
+static const char *xbt_dwarf_tag_name(unsigned int tag)
 {
-	const char *search_list_env = getenv(env_name);
-	char *search_list = NULL;
-	char *search_list_pos, *search_dir = NULL;
-	char file_name[PATH_MAX]; /* vmlinux or foo.ko */
-	char *info_path = NULL;
+	static const char *tag_names[] = {
+#define X(v) [v] = #v,
+#include "DW_TAG.x"
+#undef X
+	};
+	const char *name = NULL;
 
-	int ftw_cb(const char *path, const struct stat *sb, int type)
-	{
-		if (type != FTW_F)
-			return 0;
+	if (tag < sizeof(tag_names) / sizeof(tag_names[0]))
+		name = tag_names[tag];
 
-		if (strcmp(file_name, basename(path)) == 0) {
-			xbt_trace("found path %s, mod_name %s, search_dir %s",
-				  path,
-				  mod_name != NULL ? mod_name : "NONE",
-				  search_dir);
-			info_path = strdup(path);
-			return 1;
+	return name != NULL ? name : "-";
+}
+
+static const char *xbt_dwarf_attr_name(unsigned int attr)
+{
+	static const char *attr_names[] = {
+#define X(v) [v] = #v,
+#include "DW_AT.x"
+#undef X
+	};
+	const char *name = NULL;
+
+	if (attr < sizeof(attr_names) / sizeof(attr_names[0]))
+		name = attr_names[attr];
+
+	return name != NULL ? name : "-";
+}
+
+static int xbt_dwarf_attr_cb(Dwarf_Attribute *attr, void *unused)
+{
+	xbt_trace("ATTR %s", xbt_dwarf_attr_name(dwarf_whatattr(attr)));
+
+	return DWARF_CB_OK;
+}
+
+int xbt_dwarf_byte_size(Dwarf_Die *die)
+{
+	Dwarf_Die *type_die = die, type_die_mem;
+	Dwarf_Attribute *type_attr, type_attr_mem;
+
+	while (type_die != NULL) {
+		int byte_size;
+
+		xbt_trace("DIE %s %s, offset %lx",
+			  xbt_dwarf_tag_name(dwarf_tag(type_die)),
+			  dwarf_diename(type_die),
+			  dwarf_dieoffset(type_die));
+
+		if (xbt_debug)
+			dwarf_getattrs(type_die, &xbt_dwarf_attr_cb, NULL, 0);
+
+		byte_size = dwarf_bytesize(type_die);
+		if (!(byte_size < 0))
+			return byte_size;
+
+		type_attr = dwarf_attr_integrate(type_die, DW_AT_type, &type_attr_mem);
+		if (type_attr == NULL) {
+			xbt_trace("DIE %s %s, has no type attr",
+				  xbt_dwarf_tag_name(dwarf_tag(type_die)),
+				  dwarf_diename(type_die));
+			break;
 		}
 
-		return 0;
+		type_die = dwarf_formref_die(type_attr, &type_die_mem);
 	}
 
-	if (mod_name == NULL)
-		snprintf(file_name, sizeof(file_name), "vmlinux");
-	else
-		snprintf(file_name, sizeof(file_name), "%s.ko", mod_name);
+	return -1;
+}
 
-	if (search_list_env == NULL) {
-		/* FIXME */
+/* at DW_AT_decl_file, DW_AT_call_file */
+static const char *xbt_dwarf_get_file(Dwarf_Die *die, unsigned int at)
+{
+	Dwarf_Die *cu_die, cu_die_mem;
+	/* Get the line information.  */
+	Dwarf_Files *cu_files;
+	size_t nr_cr_files;
+	Dwarf_Attribute *file_attr, file_attr_mem;
+	Dwarf_Word file_cu_index;
+	const char *file = NULL;
+
+	cu_die = dwarf_diecu(die, &cu_die_mem, NULL, NULL);
+	if (cu_die == NULL)
 		goto out;
-	}
 
-	search_list = strdup(search_list_env);
-	if (search_list == NULL) {
-		/* ... */
+	if (dwarf_getsrcfiles(cu_die, &cu_files, &nr_cr_files) < 0)
 		goto out;
-	}
 
-	search_list_pos = search_list;
-	while (info_path == NULL &&
-	       (search_dir = strsep(&search_list_pos, ":")) != NULL)
-		ftw(search_dir, &ftw_cb, 4);
+	file_attr = dwarf_attr_integrate(die, at, &file_attr_mem);
+	if (file_attr == NULL)
+		goto out;
 
-	/* Try searching the whole thing. For Oleg. */
-	if (info_path == NULL)
-		ftw(search_list_env, &ftw_cb, 4);
+	if (dwarf_formudata(file_attr, &file_cu_index) < 0)
+		goto out;
+
+	file = dwarf_filesrc(cu_files, file_cu_index, NULL, NULL);
 
 out:
-	free(search_list);
+	return file != NULL ? file : "-";
+}
 
-	return info_path;
+/* Print a variable or formal parameter. */
+static int xbt_dwarf_var_print(struct xbt_frame *xf,
+			       Dwarf_Die *die, Dwarf_Addr pc)
+{
+	const char *tag_name = xbt_dwarf_tag_name(dwarf_tag(die));
+	const char *name = dwarf_diename(die);
+	const char *file = xbt_dwarf_get_file(die, DW_AT_decl_file);
+	Dwarf_Off offset = dwarf_dieoffset(die);
+	Dwarf_Attribute *loc_attr, loc_attr_mem;
+	int i, nr_locs;
+	size_t nr_exprs = 256;
+	Dwarf_Op *expr[nr_exprs];
+	size_t expr_len[nr_exprs];
+	Dwarf_Word *obj = NULL;
+	Dwarf_Word *bit_mask = NULL;
+	int byte_size;
+	int rc = -1;
+
+	loc_attr = dwarf_attr(die, DW_AT_location, &loc_attr_mem);
+	if (loc_attr == NULL) {
+		/* FIXME What's happening here? */
+		xbt_trace("DIE %s %s %lx has no location",
+			  tag_name, name, offset);
+		goto out;
+	}
+
+	nr_locs = dwarf_getlocation_addr(loc_attr, pc,
+					 expr, expr_len, nr_exprs);
+
+	xbt_trace("DIE %s %s %lx, file %s, nr_locs %d",
+		  tag_name, name, offset, file, nr_locs);
+
+	if (nr_locs < 0) {
+		rc = 0;
+		goto out;
+	}
+
+	byte_size = xbt_dwarf_byte_size(die);
+	xbt_trace("DIE %s %s %lx, byte_size %d",
+		  tag_name, name, offset, byte_size);
+
+	if (byte_size <= 0)
+		goto out;
+
+	obj = malloc(byte_size);
+	if (obj == NULL) {
+		xbt_error("cannot allocate %d bytes for value of '%s': %s",
+			  byte_size, name, strerror(errno));
+		goto out;
+	}
+
+	bit_mask = malloc(byte_size);
+	if (bit_mask == NULL) {
+		xbt_error("cannot allocate %d bytes for value of '%s': %s",
+			  byte_size, name, strerror(errno));
+		goto out;
+	}
+
+	for (i = 0; i < nr_locs; i++) {
+		Dwarf_Op *op = expr[i];
+		size_t op_len = expr_len[i];
+
+		rc = xbt_dwarf_eval(xf, name, /* file, */
+				    obj, bit_mask, byte_size, op, op_len);
+		if (rc == 0)
+			break;
+	}
+
+out:
+	free(obj);
+	free(bit_mask);
+
+	return rc;
 }
 
 static int xbt_dwfl_module_cb(Dwfl_Module *dwflmod,
@@ -196,7 +309,6 @@ next_cu:
 
 	do {
 		Dwarf_Die *die;
-		const char *tag_name;
 		int tag;
 		int c;
 
@@ -220,8 +332,8 @@ next_cu:
 		}
 
 #if 0
-		xbt_trace("DIE %"PRIx64" level %d, tag %d\n",
-			  (uint64_t) offset, level, tag);
+		xbt_trace("DIE %"PRIx64" level %d, tag %s\n",
+			  (uint64_t)offset, level, xbt_dwarf_tag_name(tag));
 #endif
 
 		if (level == 1 && tag != DW_TAG_subprogram)
@@ -271,54 +383,9 @@ next_cu:
 
 		} else if (tag == DW_TAG_formal_parameter ||
 			   tag == DW_TAG_variable) {
-			Dwarf_Attribute *loc_attr, loc_attr_mem;
-			int i, nr_locs;
-			size_t nr_exprs = 256;
-			Dwarf_Op *expr[nr_exprs];
-			size_t expr_len[nr_exprs];
 			Dwarf_Addr pc = dwarf_pc_is_absolute ? abs_pc : rel_pc;
 
-			/* TODO Use DW_AT_decl_file DW_AT_decl_line DW_AT_type. */
-
-			tag_name = (tag == DW_TAG_formal_parameter) ?
-				"parm" : "var";
-
-			loc_attr = dwarf_attr(die, DW_AT_location, &loc_attr_mem);
-			if (loc_attr == NULL) {
-				/* FIXME What's happening here? */
-				xbt_trace("%s %s, offset %lx has no location",
-					  tag_name,
-					  dwarf_diename(die),
-					  dwarf_dieoffset(die));
-				goto next_die;
-			}
-
-			nr_locs = dwarf_getlocation_addr(loc_attr, pc,
-							 expr, expr_len, nr_exprs);
-
-			xbt_trace("DIE %s %s, offset %lx, nr_locs %d",
-				  tag_name,
-				  dwarf_diename(die),
-				  dwarf_dieoffset(die),
-				  nr_locs);
-
-			if (nr_locs < 0) {
-				/* ... */
-				goto next_die;
-			}
-
-			for (i = 0; i < nr_locs; i++) {
-				Dwarf_Word obj[1]; /* FIXME */
-				Dwarf_Word bit_mask[1];
-
-				Dwarf_Op *op = expr[i];
-				size_t len = expr_len[i];
-
-				xbt_dwarf_eval(xf, dwarf_diename(die),
-					       obj, bit_mask, sizeof(obj),
-					       op, len);
-				/* FIXME Break on first success. */
-			}
+			xbt_dwarf_var_print(xf, die, pc);
 		} else {
 			/* Nothing. */
 		}
@@ -354,6 +421,70 @@ out:
 	xbt_trace("OUT\n");
 
 	return DWARF_CB_OK;
+}
+
+/*
+ * xbt_debuginfo_path() -- find debuginfo for module mod_name.
+ * Temporary function. Returns malloced string.
+ *
+ * TODO Handle build-ids.
+ * TODO Interpret MODULE_PATH as a colon separated list.
+ */
+ /* mod_name NULL or foo, env_name MODULE_PATH or CRASH_MODULE_PATH */
+static char *xbt_debuginfo_path(const char *mod_name, const char *env_name)
+{
+	const char *search_list_env = getenv(env_name);
+	char *search_list = NULL;
+	char *search_list_pos, *search_dir = NULL;
+	char file_name[PATH_MAX]; /* vmlinux or foo.ko */
+	char *info_path = NULL;
+
+	int ftw_cb(const char *path, const struct stat *sb, int type)
+	{
+		if (type != FTW_F)
+			return 0;
+
+		if (strcmp(file_name, basename(path)) == 0) {
+			xbt_trace("found path %s, mod_name %s, search_dir %s",
+				  path,
+				  mod_name != NULL ? mod_name : "NONE",
+				  search_dir);
+			info_path = strdup(path);
+			return 1;
+		}
+
+		return 0;
+	}
+
+	if (mod_name == NULL)
+		snprintf(file_name, sizeof(file_name), "vmlinux");
+	else
+		snprintf(file_name, sizeof(file_name), "%s.ko", mod_name);
+
+	if (search_list_env == NULL) {
+		/* FIXME */
+		goto out;
+	}
+
+	search_list = strdup(search_list_env);
+	if (search_list == NULL) {
+		/* ... */
+		goto out;
+	}
+
+	search_list_pos = search_list;
+	while (info_path == NULL &&
+	       (search_dir = strsep(&search_list_pos, ":")) != NULL)
+		ftw(search_dir, &ftw_cb, 4);
+
+	/* Try searching the whole thing. For Oleg. */
+	if (info_path == NULL)
+		ftw(search_list_env, &ftw_cb, 4);
+
+out:
+	free(search_list);
+
+	return info_path;
 }
 
 /* FIXME Pass file to cb. */
