@@ -140,14 +140,33 @@ out:
 	return file != NULL ? file : "-";
 }
 
+/* at DW_AT_decl_line, DW_AT_call_line */
+static int xbt_dwarf_get_line(Dwarf_Die *die, unsigned int at)
+{
+	Dwarf_Attribute *line_attr, line_attr_mem;
+	Dwarf_Sword line = 0;
+
+	line_attr = dwarf_attr_integrate(die, at, &line_attr_mem);
+	if (line_attr == NULL)
+		goto out;
+
+	if (dwarf_formsdata(line_attr, &line) < 0)
+		goto out;
+
+out:
+	return line;
+}
+
 /* Print a variable or formal parameter. */
 static int xbt_dwarf_var_print(struct xbt_frame *xf,
 			       Dwarf_Die *die, Dwarf_Addr pc)
 {
 	const char *tag_name = xbt_dwarf_tag_name(dwarf_tag(die));
 	const char *name = dwarf_diename(die);
-	const char *file = xbt_dwarf_get_file(die, DW_AT_decl_file);
 	Dwarf_Off offset = dwarf_dieoffset(die);
+	const char *file = xbt_dwarf_get_file(die, DW_AT_decl_file);
+	int line = xbt_dwarf_get_line(die, DW_AT_decl_line);
+
 	Dwarf_Attribute *loc_attr, loc_attr_mem;
 	int i, nr_locs;
 	size_t nr_exprs = 256;
@@ -169,8 +188,8 @@ static int xbt_dwarf_var_print(struct xbt_frame *xf,
 	nr_locs = dwarf_getlocation_addr(loc_attr, pc,
 					 expr, expr_len, nr_exprs);
 
-	xbt_trace("DIE %s %s %lx, file %s, nr_locs %d",
-		  tag_name, name, offset, file, nr_locs);
+	xbt_trace("DIE %s %s %lx, file %s, line %d, nr_locs %d",
+		  tag_name, name, offset, file, line, nr_locs);
 
 	if (nr_locs < 0) {
 		rc = 0;
@@ -202,7 +221,7 @@ static int xbt_dwarf_var_print(struct xbt_frame *xf,
 		Dwarf_Op *op = expr[i];
 		size_t op_len = expr_len[i];
 
-		rc = xbt_dwarf_eval(xf, name, /* file, */
+		rc = xbt_dwarf_eval(xf, name, /* file, line, */
 				    obj, bit_mask, byte_size, op, op_len);
 		if (rc == 0)
 			break;
