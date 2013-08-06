@@ -26,9 +26,6 @@
 #include <string.h>
 #include <malloc.h>
 #include <getopt.h>
-#ifndef CRASHDEBUG /* No include guard in crash/defs.h. */
-#include <crash/defs.h>
-#endif
 #include "xbt.h"
 #include "list.h"
 

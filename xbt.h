@@ -5,6 +5,7 @@
 #include <string.h>
 #include <assert.h>
 #include <elfutils/libdw.h>
+#include "xbt_crash.h" /* __error() */
 #include "list.h"
 
 #define XBT_ARRAY_LENGTH(a) (sizeof(a) / sizeof((a)[0]))
@@ -19,11 +20,6 @@
 #endif
 
 #define xbt_assert(x) (assert(x))
-
-/* FIXME */
-#ifndef CRASHDEBUG
-#include <crash/defs.h>
-#endif
 
 #undef xbt_trace
 #undef xbt_error
