@@ -16,8 +16,19 @@
 #include <limits.h>
 #include "xbt.h"
 
-static Dwfl *dwfl;
 int xbt_debug; /* XXX */
+static Dwfl *dwfl;
+static LIST_HEAD(mod_cache_list);
+
+struct mod_cache_entry {
+	struct list_head mce_link;
+	char mce_name[80]; /* Really 64 - sizeof(unsigned long). */
+	size_t mce_section_count;
+	struct {
+		char mce_section_name[80];
+		unsigned long mce_section_addr;
+	} mce_sections[];
+};
 
 static int xbt_find_elf(Dwfl_Module *mod, void **userdata,
 			const char *modname, Dwarf_Addr base,
@@ -116,6 +127,9 @@ static int xbt_mod_get_section_count(struct load_module *lm)
 		xbt_error("cannot get section count for module '%s'", lm->mod_name);
 		section_count = -1;
 	}
+
+	xbt_trace("mod_name %s, section_count %d", lm->mod_name, section_count);
+
 out:
 	close_tmpfile();
 
@@ -123,13 +137,10 @@ out:
 }
 
 static int xbt_mod_get_section_name(struct load_module *lm, int i,
-				    char *name, size_t name_size)
+				    char (*name)[80])
 {
-	ulong mod = lm->module_struct;
+	unsigned long mod = lm->module_struct;
 	char gdb_cmd[256];
-	char *line = NULL;
-	size_t line_size = 0;
-	char *s, *t;
 	int rc = -1;
 
 	/* gdb p/x ((struct module *)0xffffffffa000eec0)->sect_attrs->attrs[1].name
@@ -137,8 +148,11 @@ static int xbt_mod_get_section_name(struct load_module *lm, int i,
 	 */
 
 	snprintf(gdb_cmd, sizeof(gdb_cmd),
-		 "p/x ((struct module *)%#lx)->sect_attrs->attrs[%d].name",
+		 "p ((struct module *)%#lx)->sect_attrs->attrs[%d].name",
 		 mod, i);
+
+	xbt_trace("mod_name %s, i %d, gdb_cmd '%s'",
+		  lm->mod_name, i, gdb_cmd);
 
 	open_tmpfile();
 
@@ -151,26 +165,16 @@ err:
 
 	rewind(pc->tmpfile);
 
-	if (getline(&line, &line_size, pc->tmpfile) <= 0)
-		goto err;
-
-	s = line;
-	strsep(&s, "\"");
-	t = strsep(&s, "\"");
-	if (t == NULL)
+	if (fscanf(pc->tmpfile, "$%*d = %*x \"%79[^\"]\"", *name) != 1)
 		goto err;
 
 	xbt_trace("mod_name %s, i %d, name '%s'",
-		  lm->mod_name, i, t);
-
-	if (snprintf(name, name_size, "%s", t) >= strlen(t))
-		goto err;
+		  lm->mod_name, i, *name);
 
 	rc = 0;
 
 out:
 	close_tmpfile();
-	free(line);
 
 	return rc;
 }
@@ -213,25 +217,93 @@ out:
 	return rc;
 }
 
-static int xbt_mod_find_section_addr(struct load_module *lm,
-				     const char *section_name,
-				     unsigned long *addr)
+static struct mod_cache_entry *xbt_mod_cache_add(struct load_module *lm)
 {
-	char name[256];
+	struct mod_cache_entry *mce = NULL;
 	int i, section_count;
 
 	section_count = xbt_mod_get_section_count(lm);
 	if (section_count < 0)
-		return -1;
+		goto err;
+
+	mce = malloc(offsetof(typeof(*mce), mce_sections[section_count]));
+	if (mce == NULL) {
+		/* ... */
+		goto err;
+	}
+
+	INIT_LIST_HEAD(&mce->mce_link);
+	snprintf(mce->mce_name, sizeof(mce->mce_name), "%s", lm->mod_name);
+	mce->mce_section_count = section_count;
 
 	for (i = 0; i < section_count; i++) {
-		if (xbt_mod_get_section_name(lm, i, name, sizeof(name)) < 0)
+		char (*name)[80];
+		unsigned long *addr;
+		
+		name = &mce->mce_sections[i].mce_section_name;
+		addr = &mce->mce_sections[i].mce_section_addr;
+
+		if (xbt_mod_get_section_name(lm, i, name) < 0) {
+			/* ... */
+			goto err;
+		}
+
+		if (xbt_mod_get_section_addr(lm, i, addr) < 0) {
+			/* ... */
+			goto err;
+		}
+	}
+
+	list_add(&mce->mce_link, &mod_cache_list);
+
+	return mce;
+
+err:
+	if (mce != NULL)
+		list_del(&mce->mce_link);
+	free(mce);
+
+	return NULL;
+}
+
+static struct mod_cache_entry *xbt_mod_cache_lookup(const char *mod_name)
+{
+	struct mod_cache_entry *mce;
+	struct load_module *lm;
+
+	list_for_each_entry(mce, &mod_cache_list, mce_link) {
+		if (strcmp(mod_name, mce->mce_name) == 0)
+			return mce;
+	}
+
+	if (strcmp(mod_name, "kernel") == 0)
+		/* TODO */;
+
+	if (!is_module_name((char *)mod_name, NULL, &lm))
+		return NULL;
+
+	return xbt_mod_cache_add(lm);
+}
+
+static int xbt_mod_find_section_addr(const char *mod_name,
+				     const char *section_name,
+				     unsigned long *addr)
+{
+	struct mod_cache_entry *mce;
+	int i;
+
+	mce = xbt_mod_cache_lookup(mod_name);
+	if (mce == NULL)
+		return -1;
+
+	for (i = 0; i < mce->mce_section_count; i++) {
+		if (strcmp(section_name,
+			   mce->mce_sections[i].mce_section_name) != 0)
 			continue;
 
-		if (strcmp(section_name, name) != 0)
-			continue;
+		*addr = mce->mce_sections[i].mce_section_addr;
 
-		return xbt_mod_get_section_addr(lm, i, addr);
+		return 0;
 	}
 
 	return -1;
@@ -249,23 +321,12 @@ static int xbt_section_address(Dwfl_Module *mod, void **userdata,
 			       GElf_Word shndx, const GElf_Shdr *shdr,
 			       Dwarf_Addr *addr)
 {
-	struct load_module *lm;
-	unsigned long addr_tmp;
-
 	xbt_trace("modname %s, base %#lx, secname %s, shndx %"PRIu64,
 		  modname, base, secname, (uint64_t)shndx);
 
-	*addr = -1;
+	if (xbt_mod_find_section_addr(modname, secname, addr) < 0)
+		*addr = -1;
 
-	if (!is_module_name((char *)modname, NULL, &lm))
-		goto out;
-	
-	if (xbt_mod_find_section_addr(lm, secname, &addr_tmp) < 0)
-		goto out;
-
-	*addr = addr_tmp;
-
-out:
 	return 0;
 }
 
@@ -344,6 +405,7 @@ static int xbt_dwfl_init(void)
 			continue;
 		}
 
+#if 0
 		int j;
 		for (j = 0; j < lm->mod_sections; j++) {
 			struct mod_section_data *sd;
@@ -354,18 +416,46 @@ static int xbt_dwfl_init(void)
 			xbt_trace("\tname %s, offset %#lx, size %#lx",
 				  sd->name, sd->offset, sd->size);
 		}
+#endif
 	}
+
 
 	dwfl_report_end(dwfl, NULL, NULL);
 
 	return rc;
 }
 
-void xmod_func(void)
+static void xmod_func(void)
 {
 	xbt_debug = 1; /* XXX */
 
 	xbt_dwfl_init();
+}
+
+static void xcu_func(void)
+{
+        int i;
+
+	if (dwfl == NULL)
+		return;
+
+	for (i = 1; i < argcnt; i++) {
+		/* Dwfl_Module *dwfl_mod; */
+		unsigned long addr;
+		Dwarf_Die *cu_die;
+		Dwarf_Addr bias;
+
+		addr = strtoul(args[i], NULL, 0);
+
+		cu_die = dwfl_addrdie(dwfl, addr, &bias);
+		if (cu_die == NULL) {
+			xbt_error("unmapped address %#lx", addr);
+			continue;
+		}
+
+		xbt_print("addr %#lx, cu %s\n",
+			  addr, dwarf_diename(cu_die));
+	}
 }
 
 /* 
@@ -402,6 +492,11 @@ static struct command_table_entry xbt_entry[] = {
 	{
 		.name = "xmod",
 		.func = xmod_func,
+		.help_data = xmod_help,
+	},
+	{
+		.name = "xcu",
+		.func = xcu_func,
 		.help_data = xmod_help,
 	},
 	{
