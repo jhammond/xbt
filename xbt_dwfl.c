@@ -321,11 +321,11 @@ static int xbt_section_address(Dwfl_Module *mod, void **userdata,
 			       GElf_Word shndx, const GElf_Shdr *shdr,
 			       Dwarf_Addr *addr)
 {
-	xbt_trace("modname %s, base %#lx, secname %s, shndx %"PRIu64,
-		  modname, base, secname, (uint64_t)shndx);
-
 	if (xbt_mod_find_section_addr(modname, secname, addr) < 0)
 		*addr = -1;
+
+	xbt_trace("modname %s, base %#lx, secname %s, shndx %"PRIu64", addr %#lx",
+		  modname, base, secname, (uint64_t)shndx, *addr);
 
 	return 0;
 }
@@ -404,21 +404,7 @@ static int xbt_dwfl_init(void)
 			 */
 			continue;
 		}
-
-#if 0
-		int j;
-		for (j = 0; j < lm->mod_sections; j++) {
-			struct mod_section_data *sd;
-
-			sd = &lm->mod_section_data[j];
-
-			/* The offsets crash returns here are wrong. */
-			xbt_trace("\tname %s, offset %#lx, size %#lx",
-				  sd->name, sd->offset, sd->size);
-		}
-#endif
 	}
-
 
 	dwfl_report_end(dwfl, NULL, NULL);
 
@@ -453,8 +439,46 @@ static void xcu_func(void)
 			continue;
 		}
 
-		xbt_print("addr %#lx, cu %s\n",
-			  addr, dwarf_diename(cu_die));
+		xbt_print("addr %#lx, cu %s, bias %#lx\n",
+			  addr, dwarf_diename(cu_die), bias);
+	}
+}
+
+static void xscope_func(void)
+{
+        int i;
+
+	if (dwfl == NULL)
+		return;
+
+	for (i = 1; i < argcnt; i++) {
+		/* Dwfl_Module *dwfl_mod; */
+		unsigned long addr;
+		Dwarf_Die *cu_die;
+		Dwarf_Addr bias;
+		int j, scope_count;
+		Dwarf_Die *scope_dies;
+
+		addr = strtoul(args[i], NULL, 0);
+
+		cu_die = dwfl_addrdie(dwfl, addr, &bias);
+		if (cu_die == NULL) {
+			xbt_error("unmapped address %#lx", addr);
+			continue;
+		}
+
+		xbt_print("addr %#lx, cu %s, bias %#lx\n",
+			  addr, dwarf_diename(cu_die), bias);
+
+		scope_count = dwarf_getscopes(cu_die, addr, &scope_dies);
+		if (scope_count < 0)
+			continue;
+
+		for (j = 0; j < scope_count; j++)
+			xbt_print("\tj %d, die %s\n",
+				  j, dwarf_diename(&scope_dies[j]));
+
+		free(scope_dies);
 	}
 }
 
@@ -497,6 +521,11 @@ static struct command_table_entry xbt_entry[] = {
 	{
 		.name = "xcu",
 		.func = xcu_func,
+		.help_data = xmod_help,
+	},
+	{
+		.name = "xscope",
+		.func = xscope_func,
 		.help_data = xmod_help,
 	},
 	{
