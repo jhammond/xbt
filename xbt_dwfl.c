@@ -2,10 +2,8 @@
 #include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
-/* #include <fcntl.h> */
-/* #include <unistd.h> */
 #include <errno.h>
-/* #include <malloc.h> */
+#include <malloc.h>
 /* #include <ftw.h> */
 #include <bfd.h>
 #include <libelf.h>
@@ -29,6 +27,21 @@ struct mod_cache_entry {
 		unsigned long mce_section_addr;
 	} mce_sections[];
 };
+
+static const char *xbt_dwarf_tag_name(unsigned int tag)
+{
+	static const char *tag_names[] = {
+#define X(v) [v] = #v,
+#include "DW_TAG.x"
+#undef X
+	};
+	const char *name = NULL;
+
+	if (tag < sizeof(tag_names) / sizeof(tag_names[0]))
+		name = tag_names[tag];
+
+	return name != NULL ? name : "-";
+}
 
 static int xbt_find_elf(Dwfl_Module *mod, void **userdata,
 			const char *modname, Dwarf_Addr base,
@@ -452,7 +465,6 @@ static void xscope_func(void)
 		return;
 
 	for (i = 1; i < argcnt; i++) {
-		/* Dwfl_Module *dwfl_mod; */
 		unsigned long addr;
 		Dwarf_Die *cu_die;
 		Dwarf_Addr bias;
@@ -471,12 +483,18 @@ static void xscope_func(void)
 			  addr, dwarf_diename(cu_die), bias);
 
 		scope_count = dwarf_getscopes(cu_die, addr, &scope_dies);
-		if (scope_count < 0)
+		if (scope_count < 0) {
+			/* ... */
 			continue;
+		}
 
-		for (j = 0; j < scope_count; j++)
-			xbt_print("\tj %d, die %s\n",
-				  j, dwarf_diename(&scope_dies[j]));
+		for (j = 0; j < scope_count; j++) {
+			Dwarf_Die *die = &scope_dies[j];
+
+			xbt_print("\tj %d, die %s %s\n",
+				  j, xbt_dwarf_tag_name(dwarf_tag(die)),
+				  dwarf_diename(die));
+		}
 
 		free(scope_dies);
 	}
