@@ -5,7 +5,6 @@
 #include <errno.h>
 #include <malloc.h>
 /* #include <ftw.h> */
-#include <bfd.h>
 #include <libelf.h>
 #include <dwarf.h>
 #include <elfutils/libdw.h>
