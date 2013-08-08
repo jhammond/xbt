@@ -42,6 +42,21 @@ static const char *xbt_dwarf_tag_name(unsigned int tag)
 	return name != NULL ? name : "-";
 }
 
+static const char *xbt_dwarf_op_name(unsigned int op)
+{
+	static const char *op_names[] = {
+#define X(v) [v] = #v,
+#include "DW_OP.x"
+#undef X
+	};
+	const char *name = NULL;
+
+	if (op < sizeof(op_names) / sizeof(op_names[0]))
+		name = op_names[op];
+
+	return name != NULL ? name : "-";
+}
+
 static int xbt_find_elf(Dwfl_Module *mod, void **userdata,
 			const char *modname, Dwarf_Addr base,
 			char **file_name, Elf **elfp)
@@ -434,9 +449,6 @@ static void xcu_func(void)
 {
         int i;
 
-	if (dwfl == NULL)
-		return;
-
 	for (i = 1; i < argcnt; i++) {
 		/* Dwfl_Module *dwfl_mod; */
 		unsigned long addr;
@@ -459,9 +471,6 @@ static void xcu_func(void)
 static void xscope_func(void)
 {
         int i;
-
-	if (dwfl == NULL)
-		return;
 
 	for (i = 1; i < argcnt; i++) {
 		unsigned long addr;
@@ -497,6 +506,331 @@ static void xscope_func(void)
 
 		free(scope_dies);
 	}
+}
+
+#define dwarf_for_each_child(child, parent, rc)		\
+	for (rc = dwarf_child(parent, child);		\
+	     rc == 0;					\
+	     rc = dwarf_siblingof(child, child))
+
+/* sub_die a DW_TAG_subprogram, DW_TAG_inlined_subroutine, DW_TAG_lexical_block */
+
+#define XBT_OP_COUNT 256
+
+static int xbt_get_locations(Dwarf_Die *die, Dwarf_Addr pc,
+			     Dwarf_Op *(*ops)[XBT_OP_COUNT],
+			     size_t (*op_lens)[XBT_OP_COUNT])
+{
+	Dwarf_Attribute *loc, loc_mem;
+
+	loc = dwarf_attr(die, DW_AT_location, &loc_mem);
+	if (loc == NULL)
+		return -1;
+
+	return dwarf_getlocation_addr(loc, pc, *ops, *op_lens, XBT_OP_COUNT);
+}
+
+static inline const char *xbt_basename(const char *path)
+{
+	const char *s;
+
+	if (path == NULL)
+		return NULL;
+
+	s = strrchr(path, '/');
+	if (s == NULL)
+		return path;
+
+	if (s[1] == '\0')
+		return path;
+
+	return &s[1];
+}
+
+static const char *xbt_decl_file(Dwarf_Die *die)
+{
+	return xbt_basename(dwarf_decl_file(die));
+}
+
+static int xbt_decl_line(Dwarf_Die *die)
+{
+	int line;
+
+	if (dwarf_decl_line(die, &line) < 0)
+		return 0;
+
+	return line;
+}
+
+static void xcall_sub(Dwarf_Die *cu_die, int depth, Dwarf_Die *p_die, Dwarf_Addr pc)
+{
+	unsigned int p_tag;
+	Dwarf_Die *die, die_mem;
+	Dwarf_Op *ops[XBT_OP_COUNT];
+	size_t op_lens[XBT_OP_COUNT];
+	int loc_count;
+	int rc;
+
+	static char depth_indent[] = "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t";
+
+	p_tag = dwarf_tag(p_die);
+
+	die = &die_mem;
+
+#if 0
+	Dwarf_Line *dwarf_line;
+	int line;
+
+	/* Not used. */
+	dwarf_line = dwarf_getsrc_die(cu_die, pc);
+	dwarf_linesrc(dwarf_line, NULL, NULL);
+	dwarf_lineno(dwarf_line, &line);
+#endif
+
+/* depth */
+#define DEP_F "%.*s"
+#define DEP_A depth, depth_indent
+
+/* Source location. */
+#define SRC_F "%s:%d"
+#define SRC_A(die) xbt_decl_file(die), xbt_decl_line(die)
+
+#define DIE_F "%08x:%s%s%s"
+#define DIE_A(die)							\
+	((unsigned int)dwarf_dieoffset(die)),				\
+		xbt_dwarf_tag_name(dwarf_tag(die)),			\
+		(dwarf_diename(die) != NULL ? ":" : ""),		\
+		(dwarf_diename(die) != NULL ? dwarf_diename(die) : "")	\
+
+	if (p_tag == DW_TAG_lexical_block)
+		goto skip_block;
+
+	xbt_print(DEP_F DIE_F, DEP_A, DIE_A(p_die));
+
+	/* Try to print decl_file, decl_line. */
+	do {
+		if (!dwarf_hasattr_integrate(p_die, DW_AT_decl_file) ||
+		    !dwarf_hasattr_integrate(p_die, DW_AT_decl_line))
+			break;
+		
+		xbt_print(", declared at "SRC_F, SRC_A(p_die));
+	} while (0);
+
+	/* Try to print call_file, call_line. What a pain. */
+	do {
+		Dwarf_Files *files;
+		Dwarf_Attribute attr_mem, *attr;
+		Dwarf_Word val;
+		const char *file;
+		int line = 0;
+
+		if (dwarf_getsrcfiles(cu_die, &files, NULL) != 0)
+			break;
+
+		attr = dwarf_attr(p_die, DW_AT_call_file, &attr_mem);
+		if (attr == NULL)
+			break;
+
+		if (dwarf_formudata(attr, &val) != 0)
+			break;
+
+		file = dwarf_filesrc(files, val, NULL, NULL);
+		if (file == NULL)
+			break;
+
+		file = xbt_basename(file);
+
+		attr = dwarf_attr(p_die, DW_AT_call_line, &attr_mem);
+		if (attr == NULL)
+			break;
+
+		if (dwarf_formudata(attr, &val) != 0)
+			break;
+
+		line = val;
+
+		xbt_print(", called from "SRC_F, file, line);
+	} while (0);
+
+	xbt_print("\n");
+
+	depth++;
+
+skip_block:
+	/* Entry pc and offset. Blech. */
+	do {
+		Dwarf_Addr entry_pc;
+
+		/* Only print entry for subprogram, inlined subroutine. */
+		if (p_tag != DW_TAG_subprogram &&
+		    p_tag != DW_TAG_inlined_subroutine)
+			break;
+
+		/* Or just never print entry. */
+		if (true)
+			break;
+
+		if (dwarf_entrypc(p_die, &entry_pc) < 0)
+			break;
+
+		xbt_print(DEP_F"entry %#lx, offset %#lx\n",
+			  DEP_A, entry_pc, pc - entry_pc);
+	} while (0);
+
+	/* Print parameters. */
+	dwarf_for_each_child(die, p_die, rc) {
+		if (dwarf_tag(die) != DW_TAG_formal_parameter)
+			continue;
+
+		loc_count = xbt_get_locations(die, pc, &ops, &op_lens);
+		if (loc_count < 0) {
+			/* ... */
+			loc_count = 0;
+		}
+
+		xbt_print(DEP_F DIE_F", locations %d\n",
+			  DEP_A, DIE_A(die), loc_count);
+	}
+
+	/* Print local variables. */
+	dwarf_for_each_child(die, p_die, rc) {
+		if (dwarf_tag(die) != DW_TAG_variable)
+			continue;
+
+		/* Skip artificial variables (__func__). */
+		if (dwarf_hasattr_integrate(die, DW_AT_artificial))
+			continue;
+
+		loc_count = xbt_get_locations(die, pc, &ops, &op_lens);
+		if (loc_count < 0) {
+			/* ... */
+			loc_count = 0;
+		}
+
+		xbt_print(DEP_F DIE_F", declared at "SRC_F", locations %d\n",
+			  DEP_A, DIE_A(die), SRC_A(die), loc_count);
+	}
+
+	/* Recurse. */
+	dwarf_for_each_child(die, p_die, rc) {
+		unsigned int tag = dwarf_tag(die); 
+
+		if (tag != DW_TAG_inlined_subroutine &&
+		    tag != DW_TAG_lexical_block)
+			continue;
+
+		if (dwarf_haspc(die, pc) <= 0)
+			continue;
+
+		xcall_sub(cu_die, depth, die, pc);
+	}
+}
+
+static void xcall_func(void)
+{
+	unsigned long pc;
+	Dwarf_Die *cu_die, *die, die_mem;
+	Dwarf_Addr bias;
+	Dwfl_Module *dwfl_mod;
+	Dwarf_CFI *cfi;
+	Dwarf_Frame *frame = NULL;
+	int rc;
+
+	if (argcnt != 2) {
+		xbt_error("Usage: xcall ADDR");
+		goto out;
+	}
+
+	pc = strtoul(args[1], NULL, 0);
+
+	cu_die = dwfl_addrdie(dwfl, pc, &bias);
+	if (cu_die == NULL) {
+		xbt_error("unmapped address %#lx", pc);
+		goto out;
+	}
+
+	assert(bias == 0);
+
+	xbt_print("pc %#lx, cu %s\n", pc, dwarf_diename(cu_die));
+
+	dwfl_mod = dwfl_cumodule(cu_die);
+
+	cfi = dwfl_module_dwarf_cfi(dwfl_mod, &bias);
+	if (cfi == NULL) {
+		/* ... */
+		goto out;
+	}
+
+	assert(bias == 0); /* XXX */
+
+	if (dwarf_cfi_addrframe(cfi, pc, &frame) < 0) {
+		/* ... */
+		goto out;
+	}
+
+	/* Deliver a DWARF location description that yields the
+	   location or value of DWARF register number REGNO in the
+	   state described by FRAME.
+   
+	   Returns -1 for errors or zero for success, setting *NOPS to
+	   the number of operations in the array stored at *OPS.  Note
+	   the last operation is DW_OP_stack_value if there is no
+	   mutable location but only a computable value.
+
+	   *NOPS zero with *OPS set to OPS_MEM means CFI says the
+	   caller's REGNO is "undefined", i.e. it's call-clobbered and
+	   cannot be recovered.
+
+	   *NOPS zero with *OPS set to a null pointer means CFI says
+	   the caller's REGNO is "same_value", i.e. this frame did not
+	   change it; ask the caller frame where to find it.
+
+	   For common simple expressions *OPS is OPS_MEM.  For
+	   arbitrary DWARF expressions in the CFI, *OPS is an internal
+	   pointer that can be used as long as the Dwarf_CFI used to
+	   create FRAME remains alive. */
+
+	int reg;
+	for (reg = 0; reg < XBT_NR_REGS; reg++) {
+		Dwarf_Op ops_mem[3];
+		Dwarf_Op *ops;
+		size_t i, ops_len;
+
+		if (dwarf_frame_register(frame, reg, ops_mem, &ops, &ops_len) < 0) {
+			/* ... */
+			continue;
+		}
+
+		for (i = 0; i < ops_len; i++)
+			xbt_print("cfi reg %d, op %zu %s\n",
+				  reg, i, xbt_dwarf_op_name(ops[i].atom));
+	}
+
+	rc = dwarf_child(cu_die, &die_mem);
+	if (rc < 0) {
+		xbt_error("cannot read debug info for CU '%s'",
+			  dwarf_diename(cu_die));
+		goto out;
+	} else if (rc > 0) {
+		xbt_error("empty debug info for CU '%s'",
+			  dwarf_diename(cu_die));
+		goto out;
+	}
+
+	die = &die_mem;
+
+	for (; rc == 0; rc = dwarf_siblingof(die, die)) {
+		if (dwarf_tag(die) != DW_TAG_subprogram)
+			continue;
+
+		if (dwarf_haspc(die, pc) <= 0)
+			continue;
+
+		xcall_sub(cu_die, 1, die, pc);
+	}
+
+out:	
+	free(frame);
 }
 
 /* 
@@ -546,6 +880,11 @@ static struct command_table_entry xbt_entry[] = {
 		.help_data = xmod_help,
 	},
 	{
+		.name = "xcall",
+		.func = xcall_func,
+		.help_data = xmod_help,
+	},
+	{
 		.name = NULL,
 	},
 };
@@ -553,6 +892,11 @@ static struct command_table_entry xbt_entry[] = {
 void __attribute__((constructor))
 xmod_init(void)
 { 
+	if (xbt_dwfl_init() < 0) {
+		/* ... */
+		return;
+	}
+
 	register_extension(xbt_entry);
 }
 
