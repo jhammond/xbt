@@ -1975,7 +1975,7 @@ static int xbt_crash_mem_ref(struct xbt_frame *xf, void *dest,
  * TODO Try to restore parent's xf_reg from child's xf_reg when not
  * saved by prolog. Requires that child registers be restored first as
  * is the case now. */
-void xbt_frame_restore_regs(struct xbt_frame *xp)
+static void xbt_frame_restore_regs(struct xbt_frame *xp)
 {
 	struct xbt_frame *xc;
 	unsigned long start;
@@ -2101,8 +2101,9 @@ void xbt_frame_restore_regs(struct xbt_frame *xp)
 		xp->xf_reg_mask |= (1UL << ri);
 	}
 }
+
 /* xbt_func() -- crash command callback. */
-void xbt_func(void)
+static void xbt_func(void)
 {
 	struct task_context *tc = CURRENT_CONTEXT();
 	struct bt_info bt_info = {
@@ -2217,7 +2218,7 @@ out:
 	xbt_debug = 0;
 }
 
-void xmod_func(void)
+static void xmod_func(void)
 {
 	struct load_module *lm;
 	struct mod_section_data *md;
@@ -2268,7 +2269,7 @@ void xmod_func(void)
  *
  */
  
-char *xmod_help[] = {
+static char *xmod_help[] = {
 	"xmod", /* command name */
 	"XMOD XMOD XMOD!", /* short description */
 	"arg ...", /* argument synopsis, or " " if none */

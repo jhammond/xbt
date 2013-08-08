@@ -42,8 +42,6 @@ extern int xbt_debug;
 #define xbt_print(fmt, args...)			\
 	fprintf(fp, fmt, ##args)
 
-#define XBT_NR_REGS 16
-
 enum {
 	XBT_OK,
 	XBT_BAD_REG,
@@ -60,11 +58,24 @@ enum {
 };
 
 enum {
+	XBT_RAX = 0,
+	XBT_RDX = 1,
+	XBT_RCX = 2,
 	XBT_RBX = 3,
+	XBT_RSI = 4,
+	XBT_RDI = 5,
+	XBT_RBP = 6,
+	XBT_RSP = 7,
+	XBT_R8 = 8,
+	XBT_R9 = 9,
+	XBT_R10 = 10,
+	XBT_R11 = 11,
 	XBT_R12 = 12,
 	XBT_R13 = 13,
 	XBT_R14 = 14,
 	XBT_R15 = 15,
+	XBT_RA = 16,
+	XBT_NR_REGS,
 };
 
 static inline const char *xbt_strerror(int err)
@@ -196,8 +207,6 @@ static inline int xf_mem_ref(struct xbt_frame *xf,
 
 	return -XBT_UNSUPP;
 }
-
-void xbt_frame_restore_regs(struct xbt_frame *xp);
 
 void xbt_frame_print(FILE *file, struct xbt_frame *xf);
 

@@ -46,3 +46,32 @@ const char *xbt_dwarf_op_name(unsigned int op)
 
 	return name != NULL ? name : "-";
 }
+
+const char *xbt_dwarf_reg_name(unsigned int reg)
+{
+	static const char *reg_names[] = {
+		[0] = "rax",
+		[1] = "rdx",
+		[2] = "rcx",
+		[3] = "rbx",
+		[4] = "rsi",
+		[5] = "rdi",
+		[6] = "rbp",
+		[7] = "rsp",
+		[8] = "r8",
+		[9] = "r9",
+		[10] = "r10",
+		[11] = "r11",
+		[12] = "r12",
+		[13] = "r13",
+		[14] = "r14",
+		[15] = "r15",
+		[16] = "ra",
+	};
+	const char *name = NULL;
+
+	if (reg < sizeof(reg_names) / sizeof(reg_names[0]))
+		name = reg_names[reg];
+
+	return name != NULL ? name : "-";
+}

@@ -409,13 +409,6 @@ static int xbt_dwfl_init(void)
 	return rc;
 }
 
-static void xmod_func(void)
-{
-	xbt_debug = 1; /* XXX */
-
-	xbt_dwfl_init();
-}
-
 static void xcu_func(void)
 {
         int i;
@@ -697,32 +690,18 @@ skip_block:
 	}
 }
 
-static void xcall_func(void)
+static void xcall_cfi(Dwarf_Die *cu_die, Dwarf_Addr pc, Dwarf_Addr bp)
 {
-	unsigned long pc;
-	Dwarf_Die *cu_die, *die, die_mem;
-	Dwarf_Addr bias;
 	Dwfl_Module *dwfl_mod;
+	Dwarf_Addr cfa, bias;
 	Dwarf_CFI *cfi;
 	Dwarf_Frame *frame = NULL;
-	int rc;
-
-	if (argcnt != 2) {
-		xbt_error("Usage: xcall ADDR");
-		goto out;
-	}
-
-	pc = strtoul(args[1], NULL, 0);
-
-	cu_die = dwfl_addrdie(dwfl, pc, &bias);
-	if (cu_die == NULL) {
-		xbt_error("unmapped address %#lx", pc);
-		goto out;
-	}
-
-	assert(bias == 0);
-
-	xbt_print("pc %#lx, cu %s\n", pc, dwarf_diename(cu_die));
+	Dwarf_Op ops_mem[3];
+	Dwarf_Op *ops;
+	size_t i, ops_len;
+	Dwarf_Addr start, end;
+	bool is_signal;
+	int reg;
 
 	dwfl_mod = dwfl_cumodule(cu_die);
 
@@ -739,43 +718,148 @@ static void xcall_func(void)
 		goto out;
 	}
 
-	/* Deliver a DWARF location description that yields the
-	   location or value of DWARF register number REGNO in the
-	   state described by FRAME.
-   
-	   Returns -1 for errors or zero for success, setting *NOPS to
-	   the number of operations in the array stored at *OPS.  Note
-	   the last operation is DW_OP_stack_value if there is no
-	   mutable location but only a computable value.
+	if (dwarf_frame_cfa(frame, &ops, &ops_len) < 0) {
+		xbt_error("cannot get CFA for PC %#lx: %s",
+			  pc, dwarf_errmsg(-1));
+		goto out;
+	}
 
-	   *NOPS zero with *OPS set to OPS_MEM means CFI says the
-	   caller's REGNO is "undefined", i.e. it's call-clobbered and
-	   cannot be recovered.
+	/* *NOPS is zero if the CFA cannot be determined here. Note
+            that if nonempty, *OPS is a DWARF expression, not a
+            location description--append DW_OP_stack_value to a get a
+            location description for the CFA. */
+	if (ops_len == 0) {
+		xbt_error("cannot determine CFA for PC %#lx", pc);
+		goto out;
+	}
 
-	   *NOPS zero with *OPS set to a null pointer means CFI says
-	   the caller's REGNO is "same_value", i.e. this frame did not
-	   change it; ask the caller frame where to find it.
+	for (i = 0; i < ops_len; i++)
+		xbt_print("CFA %zu %s %"PRId64" %"PRId64"\n",
+			  i, xbt_dwarf_op_name(ops[i].atom),
+			  (int64_t)ops[i].number, (int64_t)ops[i].number2);
 
-	   For common simple expressions *OPS is OPS_MEM.  For
-	   arbitrary DWARF expressions in the CFI, *OPS is an internal
-	   pointer that can be used as long as the Dwarf_CFI used to
-	   create FRAME remains alive. */
+	if (ops_len != 1 ||
+	    ops[0].atom != DW_OP_bregx ||
+	    ops[0].number != XBT_RBP) {
+		xbt_error("CFA for PC %#lx is not based on rbp "
+			  "and we were lazy", pc);
+		goto out;
+	}
 
-	int reg;
+	cfa = bp + ops[0].number2;
+
+	xbt_print("CFA %#lx\n", cfa);
+
+	/* Return the DWARF register number used in FRAME to denote
+	   the return address in FRAME's caller frame.  The remaining
+	   arguments can be non-null to fill in more information.
+
+	   Fill [*START, *END) with the PC range to which FRAME's
+	   information applies.  Fill in *SIGNALP to indicate whether
+	   this is a signal-handling frame.  If true, this is the
+	   implicit call frame that calls a signal handler.  This
+	   frame's "caller" is actually the interrupted state, not a
+	   call; its return address is an exact PC, not a PC after a
+	   call instruction.  */
+
+	reg = dwarf_frame_info(frame, &start, &end, &is_signal);
+	if (reg < 0) {
+		/* ... */
+		goto out;
+	}
+
+	xbt_print("RA %s, start %#lx, end %#lx, is_signal %d\n",
+		  xbt_dwarf_reg_name(reg), start, end, (int)is_signal);
+
+	/* Check that ra == XBT_RA == 17. */
+
 	for (reg = 0; reg < XBT_NR_REGS; reg++) {
-		Dwarf_Op ops_mem[3];
-		Dwarf_Op *ops;
-		size_t i, ops_len;
+		/* Deliver a DWARF location description that yields
+		   the location or value of DWARF register number
+		   REGNO in the state described by FRAME.
+
+		   Returns -1 for errors or zero for success, setting
+		   *NOPS to the number of operations in the array
+		   stored at *OPS.  Note the last operation is
+		   DW_OP_stack_value if there is no mutable location
+		   but only a computable value.
+
+		   *NOPS zero with *OPS set to OPS_MEM means CFI says
+		   the caller's REGNO is "undefined", i.e. it's
+		   call-clobbered and cannot be recovered.
+
+		   *NOPS zero with *OPS set to a null pointer means
+		   CFI says the caller's REGNO is "same_value",
+		   i.e. this frame did not change it; ask the caller
+		   frame where to find it.
+
+		   For common simple expressions *OPS is OPS_MEM.  For
+		   arbitrary DWARF expressions in the CFI, *OPS is an
+		   internal pointer that can be used as long as the
+		   Dwarf_CFI used to create FRAME remains alive. */
 
 		if (dwarf_frame_register(frame, reg, ops_mem, &ops, &ops_len) < 0) {
 			/* ... */
 			continue;
 		}
 
+		xbt_print("CFI %s", xbt_dwarf_reg_name(reg));
+
+		if (ops_len == 0 && ops == ops_mem) {
+			xbt_print(" (undefined/call-clobbered)");
+		}
+
+		if (ops_len == 0 && ops == NULL) {
+			xbt_print(" (unmodified)");
+		}
+
+		xbt_print("\n");
+
 		for (i = 0; i < ops_len; i++)
-			xbt_print("cfi reg %d, op %zu %s\n",
-				  reg, i, xbt_dwarf_op_name(ops[i].atom));
+			xbt_print("\t%zu %s %"PRId64" %"PRId64"\n",
+				  i, xbt_dwarf_op_name(ops[i].atom),
+				  (int64_t)ops[i].number, (int64_t)ops[i].number2);
+
+		if (ops_len != 2 || ops[0].atom != DW_OP_call_frame_cfa)
+			continue; /* ... */
+
+		if (ops[1].atom == DW_OP_stack_value)
+			xbt_print("\tvalue %#lx\n", cfa);
+		else if (ops[1].atom == DW_OP_plus_uconst)
+			xbt_print("\tlocation %#lx\n", cfa + ops[1].number);
+		else
+			continue; /* ... */
 	}
+
+out:
+	free(frame);
+}
+
+static void xcall_func(void)
+{
+	Dwarf_Addr pc, bp, bias;
+	Dwarf_Die *cu_die, *die, die_mem;
+	int rc;
+
+	if (argcnt != 3) {
+		xbt_error("Usage: xcall PC BP");
+		goto out;
+	}
+
+	pc = strtoul(args[1], NULL, 0);
+	bp = strtoul(args[2], NULL, 0);
+
+	cu_die = dwfl_addrdie(dwfl, pc, &bias);
+	if (cu_die == NULL) {
+		xbt_error("unmapped address %#lx", pc);
+		goto out;
+	}
+
+	assert(bias == 0);
+
+	xbt_print("pc %#lx, cu %s\n", pc, dwarf_diename(cu_die));
+
+	xcall_cfi(cu_die, pc, bp);
 
 	rc = dwarf_child(cu_die, &die_mem);
 	if (rc < 0) {
@@ -797,11 +881,21 @@ static void xcall_func(void)
 		if (dwarf_haspc(die, pc) <= 0)
 			continue;
 
-		xcall_sub(cu_die, 1, die, pc);
+		xcall_sub(cu_die, 0, die, pc);
 	}
 
 out:	
-	free(frame);
+	(void)0;
+}
+
+static void xdebug_func(void)
+{
+	if (argcnt != 2) {
+		xbt_error("Usage: xdebug [01]");
+		return;
+	}
+
+	xbt_debug = atoi(args[1]);
 }
 
 /* 
@@ -826,34 +920,34 @@ out:
  *
  */
  
-char *xmod_help[] = {
-	"xmod", /* command name */
-	"XMOD XMOD XMOD!", /* short description */
+static char *xxx_help[] = {
+	"xxx", /* command name */
+	"XXX XXX XXX!", /* short description */
 	"arg ...", /* argument synopsis, or " " if none */
 	" ...,",
 	NULL,
 };
 
-static struct command_table_entry xbt_entry[] = {
+static struct command_table_entry xbt_dwfl_entry[] = {
 	{
-		.name = "xmod",
-		.func = xmod_func,
-		.help_data = xmod_help,
+		.name = "xdebug",
+		.func = xdebug_func,
+		.help_data = xxx_help,
 	},
 	{
 		.name = "xcu",
 		.func = xcu_func,
-		.help_data = xmod_help,
+		.help_data = xxx_help,
 	},
 	{
 		.name = "xscope",
 		.func = xscope_func,
-		.help_data = xmod_help,
+		.help_data = xxx_help,
 	},
 	{
 		.name = "xcall",
 		.func = xcall_func,
-		.help_data = xmod_help,
+		.help_data = xxx_help,
 	},
 	{
 		.name = NULL,
@@ -868,12 +962,14 @@ xmod_init(void)
 		return;
 	}
 
-	register_extension(xbt_entry);
+	register_extension(xbt_dwfl_entry);
 }
 
 void __attribute__((destructor))
 xmod_fini(void)
 {
-	if (dwfl != NULL)
+	if (dwfl != NULL) {
+		xbt_trace("ending dwfl session");
 		dwfl_end(dwfl);
+	}
 }
