@@ -37,36 +37,7 @@
 #include <assert.h>
 #include <limits.h>
 #include "xbt.h"
-
-static const char *xbt_dwarf_tag_name(unsigned int tag)
-{
-	static const char *tag_names[] = {
-#define X(v) [v] = #v,
-#include "DW_TAG.x"
-#undef X
-	};
-	const char *name = NULL;
-
-	if (tag < sizeof(tag_names) / sizeof(tag_names[0]))
-		name = tag_names[tag];
-
-	return name != NULL ? name : "-";
-}
-
-static const char *xbt_dwarf_attr_name(unsigned int attr)
-{
-	static const char *attr_names[] = {
-#define X(v) [v] = #v,
-#include "DW_AT.x"
-#undef X
-	};
-	const char *name = NULL;
-
-	if (attr < sizeof(attr_names) / sizeof(attr_names[0]))
-		name = attr_names[attr];
-
-	return name != NULL ? name : "-";
-}
+#include "xbt_dwarf.h"
 
 static int xbt_dwarf_attr_cb(Dwarf_Attribute *attr, void *unused)
 {

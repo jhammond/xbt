@@ -12,6 +12,7 @@
 #include <assert.h>
 #include <limits.h>
 #include "xbt.h"
+#include "xbt_dwarf.h"
 
 int xbt_debug; /* XXX */
 static Dwfl *dwfl;
@@ -26,36 +27,6 @@ struct mod_cache_entry {
 		unsigned long mce_section_addr;
 	} mce_sections[];
 };
-
-static const char *xbt_dwarf_tag_name(unsigned int tag)
-{
-	static const char *tag_names[] = {
-#define X(v) [v] = #v,
-#include "DW_TAG.x"
-#undef X
-	};
-	const char *name = NULL;
-
-	if (tag < sizeof(tag_names) / sizeof(tag_names[0]))
-		name = tag_names[tag];
-
-	return name != NULL ? name : "-";
-}
-
-static const char *xbt_dwarf_op_name(unsigned int op)
-{
-	static const char *op_names[] = {
-#define X(v) [v] = #v,
-#include "DW_OP.x"
-#undef X
-	};
-	const char *name = NULL;
-
-	if (op < sizeof(op_names) / sizeof(op_names[0]))
-		name = op_names[op];
-
-	return name != NULL ? name : "-";
-}
 
 static int xbt_find_elf(Dwfl_Module *mod, void **userdata,
 			const char *modname, Dwarf_Addr base,
