@@ -94,6 +94,8 @@ static int xbt_find_debuginfo(Dwfl_Module *mod, void **userdata,
 
 	/* TODO Try file_name, dwfl_standard_find_debuginfo() */
 
+	/* TODO *debuginfo_file_name = lm->mod_namelist; strdup()? */
+
 out:
 	return fd;
 }
@@ -703,6 +705,42 @@ static void xcall_cfi(Dwarf_Die *cu_die, Dwarf_Addr pc, Dwarf_Addr bp)
 	bool is_signal;
 	int reg;
 
+	Dwarf_Addr task, stack_base;
+	char *stack_buf = NULL;
+	size_t stack_size;
+
+	task = CURRENT_TASK();
+	stack_base = GET_STACKBASE(task);
+	stack_size = STACKSIZE();
+
+	xbt_print("task %#lx, stack_base %#lx\n", task, stack_base);
+
+	stack_buf = malloc(stack_size);
+	if (stack_buf == NULL) {
+		xbt_error("cannot allocate stack buffer of size %zu", stack_size);
+		goto out;
+	}
+
+	if (!readmem(stack_base, KVADDR,
+		     stack_buf, stack_size, "stack", RETURN_ON_ERROR)) {
+		xbt_error("cannot read stack of task ...");
+		goto out;
+	}
+
+#define STACK_REF(addr, value, rc)					\
+	do {								\
+		Dwarf_Addr _addr = (addr);				\
+									\
+		if (!(stack_base <= _addr && _addr < stack_base + stack_size)) { \
+			xbt_error("address %#lx is not in the stack area of ...", \
+				  _addr);				\
+			(rc) = -1;					\
+			break;						\
+		}							\
+		value = *(unsigned long *)&stack_buf[_addr - stack_base]; \
+		(rc) = 0;						\
+	} while (0)
+
 	dwfl_mod = dwfl_cumodule(cu_die);
 
 	cfi = dwfl_module_dwarf_cfi(dwfl_mod, &bias);
@@ -823,15 +861,26 @@ static void xcall_cfi(Dwarf_Die *cu_die, Dwarf_Addr pc, Dwarf_Addr bp)
 		if (ops_len != 2 || ops[0].atom != DW_OP_call_frame_cfa)
 			continue; /* ... */
 
-		if (ops[1].atom == DW_OP_stack_value)
+		if (ops[1].atom == DW_OP_stack_value) {
 			xbt_print("\tvalue %#lx\n", cfa);
-		else if (ops[1].atom == DW_OP_plus_uconst)
-			xbt_print("\tlocation %#lx\n", cfa + ops[1].number);
-		else
+		} else if (ops[1].atom == DW_OP_plus_uconst) {
+			Dwarf_Addr addr = cfa + ops[1].number;
+			unsigned long value;
+			int rc;
+
+			xbt_print("\tlocation %#lx\n", addr);
+			STACK_REF(addr, value, rc);
+			if (rc < 0)
+				continue;
+
+			xbt_print("\tvalue %#lx\n", value);
+		} else {
 			continue; /* ... */
+		}
 	}
 
 out:
+	free(stack_buf);
 	free(frame);
 }
 
