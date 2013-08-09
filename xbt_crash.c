@@ -2146,7 +2146,6 @@ static void xbt_frame_fini(struct xbt_frame *xf)
 {
 	xf->xf_context = NULL;
 	list_del_init(&xf->xf_context_link);
-	xf->xf_frame_base = NULL;
 	xf->xf_stack_base = NULL;
 }
 
@@ -2230,6 +2229,9 @@ static void xbt_func(void)
 
 	xbt_context_init(xc, bt, pc->nullfp);
 
+	xbt_print("xc_stack_start %#lx, xc_stack_end %#lx\n",
+		  xc->xc_stack_start, xc->xc_stack_end);
+
 	struct xbt_frame *xf;
 	xbt_for_each_frame(xf, xc) {
 		struct xbt_frame *xp = xf_parent(xf);
@@ -2238,10 +2240,6 @@ static void xbt_func(void)
 			xf->xf_frame_end = xp->xf_frame_start;
 		else
 			xf->xf_frame_end = xf->xf_frame_start;
-
-		xf->xf_frame_base = &bt->stackbuf[xf->xf_frame_end -
-						  bt->stackbase -
-						  sizeof(ulong)];
 	}
 
 	/* Children first. */
@@ -2249,6 +2247,10 @@ static void xbt_func(void)
 		xbt_frame_restore_regs(xf);
 
 	xbt_for_each_frame(xf, xc) {
+		unsigned long base = -1;
+
+		xf_frame_ref(xf, &base, -8);
+
 		xbt_print("#%d\n"
 			  "\tmod %s, name %s, RIP %#016lx\n"
 			  "\tframe start %#016lx, end %#016lx, *base %#016lx\n",
@@ -2256,8 +2258,7 @@ static void xbt_func(void)
 			  xf->xf_mod_name != NULL ? xf->xf_mod_name : "NONE",
 			  xf->xf_func_name != NULL ? xf->xf_func_name : "NONE",
 			  xf->xf_rip,
-			  xf->xf_frame_start, xf->xf_frame_end,
-			  *(ulong *)xf->xf_frame_base);
+			  xf->xf_frame_start, xf->xf_frame_end, base);
 
 #define XBT_PRINT_REG(r)					\
 		if (xf->xf_reg_mask & (1UL << (r)))		\

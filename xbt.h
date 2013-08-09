@@ -110,7 +110,6 @@ struct xbt_frame {
 
 	/* Frame data. */
 	int			xf_level; /* #i in crash 'bt'. */
-	const void	       *xf_frame_base; /* Copy of frame in our memory. */
 	unsigned long		xf_frame_start;
 	unsigned long		xf_frame_end;
 	unsigned long		xf_rip; /* saved rip */
@@ -193,6 +192,8 @@ static inline int xf_reg_ref(struct xbt_frame *xf,
 static inline int xc_mem_ref(struct xbt_context *xc,
 			     void *dest, unsigned long addr, size_t size)
 {
+	xbt_trace("addr %#lx, size %zu", addr, size);
+
 	if (xc->xc_stack_start <= addr && addr + size < xc->xc_stack_end) {
 		memcpy(dest, &xc->xc_stack[addr - xc->xc_stack_start], size);
 		return 0;
