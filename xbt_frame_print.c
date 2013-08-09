@@ -39,47 +39,6 @@
 #include "xbt.h"
 #include "xbt_dwarf.h"
 
-static int xbt_dwarf_attr_cb(Dwarf_Attribute *attr, void *unused)
-{
-	xbt_trace("ATTR %s", xbt_dwarf_attr_name(dwarf_whatattr(attr)));
-
-	return DWARF_CB_OK;
-}
-
-int xbt_dwarf_byte_size(Dwarf_Die *die)
-{
-	Dwarf_Die *type_die = die, type_die_mem;
-	Dwarf_Attribute *type_attr, type_attr_mem;
-
-	while (type_die != NULL) {
-		int byte_size;
-
-		xbt_trace("DIE %s %s, offset %lx",
-			  xbt_dwarf_tag_name(dwarf_tag(type_die)),
-			  dwarf_diename(type_die),
-			  dwarf_dieoffset(type_die));
-
-		if (xbt_debug)
-			dwarf_getattrs(type_die, &xbt_dwarf_attr_cb, NULL, 0);
-
-		byte_size = dwarf_bytesize(type_die);
-		if (!(byte_size < 0))
-			return byte_size;
-
-		type_attr = dwarf_attr_integrate(type_die, DW_AT_type, &type_attr_mem);
-		if (type_attr == NULL) {
-			xbt_trace("DIE %s %s, has no type attr",
-				  xbt_dwarf_tag_name(dwarf_tag(type_die)),
-				  dwarf_diename(type_die));
-			break;
-		}
-
-		type_die = dwarf_formref_die(type_attr, &type_die_mem);
-	}
-
-	return -1;
-}
-
 /* at DW_AT_decl_file, DW_AT_call_file */
 static const char *xbt_dwarf_get_file(Dwarf_Die *die, unsigned int at)
 {

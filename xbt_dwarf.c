@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <dwarf.h>
+#include <elfutils/libdw.h>
 #include "xbt_dwarf.h"
 
 const char *xbt_dwarf_tag_name(unsigned int tag)
@@ -75,3 +76,39 @@ const char *xbt_dwarf_reg_name(unsigned int reg)
 
 	return name != NULL ? name : "-";
 }
+
+int xbt_dwarf_byte_size(Dwarf_Die *die)
+{
+	Dwarf_Die *type_die = die, type_die_mem;
+	Dwarf_Attribute *type_attr, type_attr_mem;
+
+	while (type_die != NULL) {
+		int byte_size;
+
+#if 0
+		xbt_trace("DIE %s %s, offset %lx",
+			  xbt_dwarf_tag_name(dwarf_tag(type_die)),
+			  dwarf_diename(type_die),
+			  dwarf_dieoffset(type_die));
+#endif
+
+		byte_size = dwarf_bytesize(type_die);
+		if (!(byte_size < 0))
+			return byte_size;
+
+		type_attr = dwarf_attr_integrate(type_die, DW_AT_type, &type_attr_mem);
+		if (type_attr == NULL) {
+#if 0
+			xbt_trace("DIE %s %s, has no type attr",
+				  xbt_dwarf_tag_name(dwarf_tag(type_die)),
+				  dwarf_diename(type_die));
+#endif
+			break;
+		}
+
+		type_die = dwarf_formref_die(type_attr, &type_die_mem);
+	}
+
+	return -1;
+}
+
