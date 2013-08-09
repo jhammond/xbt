@@ -11,15 +11,6 @@
 
 #define XBT_ARRAY_LENGTH(a) (sizeof(a) / sizeof((a)[0]))
 
-#if 0
-#define xbt_trace(fmt, args...) \
-	fprintf(stderr, "# %s:%d: "fmt"\n", __func__, __LINE__, ##args)
-
-#define xbt_error(fmt, args...) \
-	fprintf(stderr, "# %s:%d: "fmt"\n", __func__, __LINE__, ##args)
-
-#endif
-
 #define xbt_assert(x) (assert(x))
 
 #undef xbt_trace
@@ -115,11 +106,6 @@ struct xbt_frame {
 	unsigned long		xf_rip; /* saved rip */
 	unsigned long		xf_reg[XBT_NR_REGS];
 	unsigned long		xf_reg_mask;
-
-	/* Stack data. */
-	const void	       *xf_stack_base; /* Copy of stack in our memory. */
-	unsigned long		xf_stack_start;
-	unsigned long		xf_stack_end;
 
 	/* Function data. */
 	struct syment	       *xf_syment;

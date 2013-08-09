@@ -2146,7 +2146,6 @@ static void xbt_frame_fini(struct xbt_frame *xf)
 {
 	xf->xf_context = NULL;
 	list_del_init(&xf->xf_context_link);
-	xf->xf_stack_base = NULL;
 }
 
 static void xbt_context_fini(struct xbt_context *xc)
