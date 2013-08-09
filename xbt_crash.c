@@ -31,6 +31,22 @@
 
 int xbt_debug;
 
+static int xbt_crash_mem_ref(struct xbt_context *xc,
+			     void *dest, unsigned long addr, size_t size)
+{
+	int rc;
+
+	if (readmem(addr, KVADDR, dest, size, "xbt_crash_mem_ref",
+		    QUIET|RETURN_ON_ERROR))
+		rc = 0;
+	else
+		rc = -XBT_BAD_MEM;
+
+	xbt_trace("addr %lx, size %zu, rc %d", addr, size, rc);
+
+	return rc;
+}
+
 /* BEGIN copy from crash-7.0.0/x86_64.c */
 
 #define EFRAME_PRINT  (0x1)
@@ -1232,7 +1248,7 @@ x86_64_display_full_frame(struct bt_info *bt, ulong rsp, FILE *fp)
 #define BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED (4)
 
 /* Was x86_64_print_stack_entry() */
-static int xbt_frame_add(struct list_head *xf_list,
+static int xbt_frame_add(struct xbt_context *xc,
 			 struct bt_info *bt, FILE *fp, int level, 
 			 int stkindex, ulong text)
 {
@@ -1252,8 +1268,10 @@ static int xbt_frame_add(struct list_head *xf_list,
 		goto out;
 		rc = -ENOMEM;
 	}
+
 	memset(xf, 0, sizeof(*xf));
-	INIT_LIST_HEAD(&xf->xf_link);
+	xf->xf_context = xc;
+	INIT_LIST_HEAD(&xf->xf_context_link);
 	xf->xf_level = level;
 	xf->xf_rip = text;
 
@@ -1274,7 +1292,7 @@ static int xbt_frame_add(struct list_head *xf_list,
 	xf->xf_func_offset = offset;
 
 	if (bt->flags & BT_EXCEPTION_FRAME)
-		xf->xf_is_exception = 1;
+		xf->xf_is_exception = true;
 
 	if (offset == 0 &&
 	    !(bt->flags & BT_EXCEPTION_FRAME) &&
@@ -1403,11 +1421,16 @@ static int xbt_frame_add(struct list_head *xf_list,
 	xf->xf_func_name = func_name;
 	xf->xf_func_start = xf->xf_syment->value;
 	xf->xf_func_offset = xf->xf_rip - xf->xf_func_start;
-out:
-	/* FIXME Cleanup. */
 
+	list_add_tail(&xf->xf_context_link, &xc->xc_frame_list);
+
+	return rc;
+
+out:
 	if (xf != NULL)
-		list_add_tail(&xf->xf_link, xf_list);
+		list_del(&xf->xf_context_link);
+
+	free(xf);
 
 	return rc;
 }
@@ -1431,11 +1454,14 @@ out:
 "    process stack pointer: %lx\n"\
 "       current stack base: %lx\n"
 
-/* xbt_back_trace_to_xf_list() -- convetr crash bt_info to xbt frame
+/* xbt_context_init() -- convetr crash bt_info to xbt frame
    list.  Was x86_64_low_budget_back_trace_cmd(). */
-static void xbt_back_trace_to_list(const struct bt_info *bt_in,
-				   struct list_head *xf_list,
-				   FILE *fp)
+
+/* TODO error(FATAL, ...) will leak our memory. */
+
+static int xbt_context_init(struct xbt_context *xc,
+			    const struct bt_info *bt_in,
+			    FILE *fp)
 {
 	struct machine_specific *ms = machdep->machspec;
 	struct bt_info bt_local, *bt;
@@ -1460,6 +1486,31 @@ static void xbt_back_trace_to_list(const struct bt_info *bt_in,
 	last_process_stack_eframe = 0;
 	rsp = bt->stkptr;
 
+	memset(xc, 0, sizeof(*xc));
+	xc->xc_task = bt->task;
+	INIT_LIST_HEAD(&xc->xc_frame_list);
+	xc->xc_mem_ref = xbt_crash_mem_ref;
+
+	xc->xc_stack_start = GET_STACKBASE(xc->xc_task);
+	xc->xc_stack_end = xc->xc_stack_start + STACKSIZE();
+
+	xc->xc_stack = malloc(xc->xc_stack_end - xc->xc_stack_start);
+	if (xc->xc_stack == NULL) {
+		xbt_error("cannot allocate stack buffer of size %lu: %s",
+			  xc->xc_stack_end - xc->xc_stack_start,
+			  strerror(errno));
+		xc->xc_stack_start = xc->xc_stack_end = 0;
+		return -1;
+	}
+
+	/* XXX Are we in an exception? Does it matter? */
+	if (!readmem(xc->xc_stack_start, KVADDR, xc->xc_stack,
+		     xc->xc_stack_end - xc->xc_stack_start,
+		     "stack", RETURN_ON_ERROR)) {
+		error(INFO, "cannot read stack");
+		return -1;
+	}
+
 	/* If rsp is in user stack, the memory may not be included in vmcore, and
 	 * we only output the register's value. So it's not necessary to check
 	 * whether it can be accessible.
@@ -1472,7 +1523,8 @@ static void xbt_back_trace_to_list(const struct bt_info *bt_in,
 			diskdump_display_regs(bt->tc->processor, fp);
 		else if (SADUMP_DUMPFILE())
 			sadump_display_regs(bt->tc->processor, fp);
-		return;
+
+		return -1;
 	}
 
 	/* BT_USER_SPACE set by get_{kvmdump,..}_regs(). */
@@ -1481,14 +1533,16 @@ static void xbt_back_trace_to_list(const struct bt_info *bt_in,
 	if (bt->flags & BT_TEXT_SYMBOLS) {
 		if ((bt->flags & BT_USER_SPACE) &&
 		    !(bt->flags & BT_TEXT_SYMBOLS_ALL))
-			return;
+			return -1;
+
 		if (!(bt->flags & BT_TEXT_SYMBOLS_ALL))
                 	fprintf(fp, "%sSTART: %s%s at %lx\n",
-                	    space(VADDR_PRLEN > 8 ? 14 : 6),
-                	    closest_symbol(bt->instptr), 
-			    STREQ(closest_symbol(bt->instptr), "thread_return") ?
-			    " (schedule)" : "",
-			    bt->instptr);
+				space(VADDR_PRLEN > 8 ? 14 : 6),
+				closest_symbol(bt->instptr), 
+				STREQ(closest_symbol(bt->instptr), "thread_return") ?
+				" (schedule)" : "",
+				bt->instptr);
+
 	} else if (bt->flags & BT_USER_SPACE) {
 		fprintf(fp, "    [exception RIP: user space]\n");
 		if (KVMDUMP_DUMPFILE())
@@ -1497,7 +1551,8 @@ static void xbt_back_trace_to_list(const struct bt_info *bt_in,
 			diskdump_display_regs(bt->tc->processor, fp);
 		else if (SADUMP_DUMPFILE())
 			sadump_display_regs(bt->tc->processor, fp);
-		return;
+
+		return -1;
 	} else if ((bt->flags & BT_KERNEL_SPACE) &&
 		   (KVMDUMP_DUMPFILE() ||
 		    (ELF_NOTES_VALID() && DISKDUMP_DUMPFILE()) ||
@@ -1522,8 +1577,9 @@ static void xbt_back_trace_to_list(const struct bt_info *bt_in,
 		else if (SADUMP_DUMPFILE())
 			sadump_display_regs(bt->tc->processor, fp);
         } else if (bt->flags & BT_START) {
-                xbt_frame_add(xf_list, bt, fp, level,
-                        0, bt->instptr);
+                if (xbt_frame_add(xc, bt, fp, level, 0, bt->instptr) < 0)
+			return -1;
+
 		bt->flags &= ~BT_START;
 		level++;
 	}
@@ -1540,12 +1596,12 @@ in_exception_stack:
                 bt->stackbuf = ms->irqstack;
 
                 if (!readmem(bt->stackbase, KVADDR, bt->stackbuf,
-                    bt->stacktop - bt->stackbase,
-		    bt->hp && (bt->hp->esp == bt->stkptr) ? 
-	 	    "irqstack contents via hook" : "irqstack contents", 
-		    RETURN_ON_ERROR))
+			     bt->stacktop - bt->stackbase,
+			     bt->hp && (bt->hp->esp == bt->stkptr) ? 
+			     "irqstack contents via hook" : "irqstack contents", 
+			     RETURN_ON_ERROR))
                     	error(FATAL, "read of exception stack at %lx failed\n",
-                        	bt->stackbase);
+			      bt->stackbase);
 
 		/*
 	 	 *  If irq_eframe is set, we've jumped back here from the
@@ -1557,7 +1613,7 @@ in_exception_stack:
 		if (irq_eframe) {
 			bt->flags |= BT_EXCEPTION_FRAME;
 			i = (irq_eframe - bt->stackbase) / sizeof(ulong);
-			xbt_frame_add(xf_list, bt, fp, level, i, bt->instptr);
+			xbt_frame_add(xc, bt, fp, level, i, bt->instptr);
 			bt->flags &= ~(ulonglong)BT_EXCEPTION_FRAME;
 			cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0,
 						    bt->stackbuf +
@@ -1584,7 +1640,7 @@ in_exception_stack:
 			if (!is_kernel_text(*up))
 		        	continue;
 
-			switch (xbt_frame_add(xf_list, bt, fp, level, i, *up)) {
+			switch (xbt_frame_add(xc, bt, fp, level, i, *up)) {
 			case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
 				i += SIZE(pt_regs) / sizeof(ulong);
@@ -1637,8 +1693,7 @@ in_exception_stack:
 		 */
 		if (!done) {
 			bt->flags |= BT_START|BT_SAVE_EFRAME_IP;
-			xbt_frame_add(xf_list, bt, fp, level,
-						 0, bt->instptr);
+			xbt_frame_add(xc, bt, fp, level, 0, bt->instptr);
 			bt->flags &= 
 			    	~(BT_START|BT_SAVE_EFRAME_IP|BT_FRAMESIZE_DISABLE);
 
@@ -1649,7 +1704,7 @@ in_exception_stack:
 				fprintf(fp, "    [ %s exception stack recursion: "
 					"prior stack location overwritten ]\n",
 					x86_64_exception_stacks[estack_index]);
-				return;
+				return -1;
 			}
 
 			level++;
@@ -1694,7 +1749,7 @@ in_exception_stack:
 			if (!is_kernel_text(*up))
 				continue;
 
-			switch (xbt_frame_add(xf_list, bt, fp, level, i, *up)) {
+			switch (xbt_frame_add(xc, bt, fp, level, i, *up)) {
 			case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 				rsp += SIZE(pt_regs);
 				i += SIZE(pt_regs) / sizeof(ulong);
@@ -1772,7 +1827,7 @@ in_exception_stack:
 					 * RSP 0 from MSR_IA32_SYSENTER_ESP?
 					 */
 					if (rsp == 0)
-						return; /* XXX */
+						return -1; /* XXX */
 					done = TRUE;
 					break;
 				}
@@ -1807,7 +1862,7 @@ in_exception_stack:
 	     STREQ(rip_symbol, "__schedule"))) {
 		if (STREQ(rip_symbol, "__schedule")) {
 			i = (rsp - bt->stackbase) / sizeof(ulong);
-			xbt_frame_add(xf_list, bt, fp, level, i, bt->instptr);
+			xbt_frame_add(xc, bt, fp, level, i, bt->instptr);
 			level++;
 			rsp = __schedule_frame_adjust(rsp, bt);
 			if (STREQ(closest_symbol(bt->instptr), "schedule"))
@@ -1818,7 +1873,7 @@ in_exception_stack:
 
 		if (bt->flags & BT_SCHEDULE) {
 			i = (rsp - bt->stackbase) / sizeof(ulong);
-			xbt_frame_add(xf_list, bt, fp, level, i, bt->instptr);
+			xbt_frame_add(xc, bt, fp, level, i, bt->instptr);
 			bt->flags &= ~(ulonglong)BT_SCHEDULE;
 			rsp += sizeof(ulong);
 			level++;
@@ -1834,7 +1889,7 @@ in_exception_stack:
         if (irq_eframe) {
                 bt->flags |= BT_EXCEPTION_FRAME;
                 i = (irq_eframe - bt->stackbase) / sizeof(ulong);
-                xbt_frame_add(xf_list, bt, fp, level, i, bt->instptr);
+                xbt_frame_add(xc, bt, fp, level, i, bt->instptr);
                 bt->flags &= ~(ulonglong)BT_EXCEPTION_FRAME;
                 cs = x86_64_exception_frame(EFRAME_PRINT|EFRAME_CS, 0, 
 			bt->stackbuf + (irq_eframe - bt->stackbase), bt, fp);
@@ -1903,7 +1958,7 @@ in_exception_stack:
 			}
 		}
 
-		switch (xbt_frame_add(xf_list, bt, fp, level, i, *up)) {
+		switch (xbt_frame_add(xc, bt, fp, level, i, *up)) {
 		case BACKTRACE_ENTRY_AND_EFRAME_DISPLAYED:
 			last_process_stack_eframe = rsp + 8;
 			if (x86_64_print_eframe_location(last_process_stack_eframe, level, fp))
@@ -1944,24 +1999,9 @@ in_exception_stack:
 					       bt, fp);
 	}
 
+	return 0;
 }
 /* END copy from crash-7.0.0/x86_64.c */
-
-static int xbt_crash_mem_ref(struct xbt_frame *xf, void *dest,
-			     unsigned long addr, size_t size)
-{
-	int rc;
-
-	if (readmem(addr, KVADDR, dest, size, "xbt_crash_mem_ref",
-		    QUIET|RETURN_ON_ERROR))
-		rc = 0;
-	else
-		rc = -XBT_BAD_MEM;
-
-	xbt_trace("addr %lx, size %zu, rc %d", addr, size, rc);
-
-	return rc;
-}
 
 /* xbt_frame_restore_regs() -- semibackwards nonportable prolog
  * disassembler.  The 30 minute works for me version.
@@ -2102,6 +2142,29 @@ static void xbt_frame_restore_regs(struct xbt_frame *xp)
 	}
 }
 
+static void xbt_frame_fini(struct xbt_frame *xf)
+{
+	xf->xf_context = NULL;
+	list_del_init(&xf->xf_context_link);
+	xf->xf_frame_base = NULL;
+	xf->xf_stack_base = NULL;
+}
+
+static void xbt_context_fini(struct xbt_context *xc)
+{
+	struct xbt_frame *xf;
+
+	free(xc->xc_stack);
+	xc->xc_stack = NULL;
+	xc->xc_stack_start = xc->xc_stack_end = 0;
+
+	while (!list_empty(&xc->xc_frame_list)) {
+		xf = xbt_list_entry(xc->xc_frame_list.next);
+		xbt_frame_fini(xf);
+		free(xf);
+	}
+}
+
 /* xbt_func() -- crash command callback. */
 static void xbt_func(void)
 {
@@ -2116,7 +2179,14 @@ static void xbt_func(void)
 	}, *bt = &bt_info;
 	ulong rsp;
 	char *rip_sym;
-	LIST_HEAD(xf_list);
+
+	struct xbt_context *xc = NULL;
+
+	xc = malloc(sizeof(*xc));
+	if (xc == NULL) {
+		xbt_error("cannot allocate XBT context: %s", strerror(errno));
+		goto out;
+	}
 
 	/*
 	 * TODO Add option to select a specific frame.
@@ -2158,36 +2228,27 @@ static void xbt_func(void)
 	rip_sym = closest_symbol(bt->instptr);
 	xbt_trace("rip_sym %s", rip_sym);
 
-	xbt_back_trace_to_list(bt, &xf_list, pc->nullfp);
+	xbt_context_init(xc, bt, pc->nullfp);
 
 	struct xbt_frame *xf;
-	list_for_each_entry(xf, &xf_list, xf_link) {
-		/* Prev is child. */
-		if (xf->xf_link.prev != &xf_list)
-			xf->xf_has_child = true;
+	xbt_for_each_frame(xf, xc) {
+		struct xbt_frame *xp = xf_parent(xf);
 
-		/*  Next is parent. */
-		if (xf->xf_link.next != &xf_list) {
-			xf->xf_has_parent = true;
-			xf->xf_frame_end = xf_parent(xf)->xf_frame_start;
-		} else {
+		if (xp != NULL)
+			xf->xf_frame_end = xp->xf_frame_start;
+		else
 			xf->xf_frame_end = xf->xf_frame_start;
-		}
 
 		xf->xf_frame_base = &bt->stackbuf[xf->xf_frame_end -
 						  bt->stackbase -
 						  sizeof(ulong)];
-
-		xf->xf_stack_base = bt->stackbuf;
-		xf->xf_stack_start = bt->stackbase;
-		xf->xf_stack_end = bt->stacktop;
-		xf->xf_mem_ref = &xbt_crash_mem_ref;
 	}
 
-	list_for_each_entry(xf, &xf_list, xf_link)
+	/* Children first. */
+	xbt_for_each_frame(xf, xc)
 		xbt_frame_restore_regs(xf);
 
-	list_for_each_entry(xf, &xf_list, xf_link) {
+	xbt_for_each_frame(xf, xc) {
 		xbt_print("#%d\n"
 			  "\tmod %s, name %s, RIP %#016lx\n"
 			  "\tframe start %#016lx, end %#016lx, *base %#016lx\n",
@@ -2213,7 +2274,10 @@ static void xbt_func(void)
 		xbt_print("\n");
 	}
 out:
-	/* FIXME Cleanup. */
+	if (xc != NULL) {
+		xbt_context_fini(xc);
+		free(xc);
+	}
 
 	xbt_debug = 0;
 }

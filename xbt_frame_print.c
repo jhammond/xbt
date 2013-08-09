@@ -485,6 +485,8 @@ void xbt_frame_print(FILE *file, struct xbt_frame *xf)
 	Dwfl *dwfl = NULL;
 	int dwfl_fd = -1;
 
+	xbt_trace("xf_debuginfo_path '%s'", xf->xf_debuginfo_path);
+
 	path = xf->xf_debuginfo_path;
 	if (path == NULL)
 		path = xbt_debuginfo_path(xf->xf_mod_name, "MODULE_PATH");

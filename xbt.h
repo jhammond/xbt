@@ -1,5 +1,6 @@
 #ifndef _XBT_H_
 #define _XBT_H_
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -86,9 +87,28 @@ static inline const char *xbt_strerror(int err)
 struct load_module;
 struct syment;
 
+struct xbt_context {
+	unsigned long		xc_task;
+	char		       *xc_stack;
+	unsigned long		xc_stack_start;
+	unsigned long		xc_stack_end; /* start < end */
+
+	/* Frame list starts with leaf frame, prev is child/callee,
+	 * next is parent/caller. */
+
+	struct list_head	xc_frame_list;
+
+	int (*xc_mem_ref)(struct xbt_context * /* this */,
+			  void * /* dest */,
+			  unsigned long /* address */,
+			  size_t /* size */);
+};
+
 struct xbt_frame {
+	struct xbt_context     *xf_context;
+	struct list_head	xf_context_link;
+
 	/* Frame data. */
-	struct list_head	xf_link;
 	int			xf_level; /* #i in crash 'bt'. */
 	const void	       *xf_frame_base; /* Copy of frame in our memory. */
 	unsigned long		xf_frame_start;
@@ -117,37 +137,39 @@ struct xbt_frame {
 	/* Debuginfo. */
 	char		       *xf_debuginfo_path;
 
-	unsigned long		xf_is_exception:1,
-				xf_is_irq:1,
-				xf_has_child:1,
-				xf_has_parent:1;
+	bool			xf_is_exception:1,
+				xf_is_irq:1;
 
-	int (*xf_reg_ref)(struct xbt_frame *,
+	int (*xf_reg_ref)(struct xbt_frame * /* this */,
 			  unsigned long * /* dest */,
 			  unsigned /* reg */);
-	int (*xf_frame_ref)(struct xbt_frame *,
+	int (*xf_frame_ref)(struct xbt_frame * /* this */,
 			    unsigned long * /* dest */,
 			    long /* offset */);
-	int (*xf_mem_ref)(struct xbt_frame *,
-			  void */* dest */,
-			  unsigned long /* address */,
-			  size_t /* size */);
 };
+
+#define xbt_for_each_frame(xf, xc)					\
+	list_for_each_entry((xf), &(xc)->xc_frame_list, xf_context_link)
+
+#define xbt_list_entry(h)					\
+	list_entry(h, struct xbt_frame, xf_context_link)
 
 static inline struct xbt_frame *xf_child(struct xbt_frame *xf)
 {
-	if (!xf->xf_has_child)
+	if (xf->xf_context_link.prev == &xf->xf_context->xc_frame_list)
 		return NULL;
 
-	return list_entry(xf->xf_link.prev, struct xbt_frame, xf_link);
+	return list_entry(xf->xf_context_link.prev, struct xbt_frame,
+			  xf_context_link);
 }
 
 static inline struct xbt_frame *xf_parent(struct xbt_frame *xf)
 {
-	if (!xf->xf_has_parent)
+	if (xf->xf_context_link.next == &xf->xf_context->xc_frame_list)
 		return NULL;
 
-	return list_entry(xf->xf_link.next, struct xbt_frame, xf_link);
+	return list_entry(xf->xf_context_link.next, struct xbt_frame,
+			  xf_context_link);
 }
 
 static inline int xf_reg_ref(struct xbt_frame *xf,
@@ -168,44 +190,38 @@ static inline int xf_reg_ref(struct xbt_frame *xf,
 	return XBT_OK;
 }
 
+static inline int xc_mem_ref(struct xbt_context *xc,
+			     void *dest, unsigned long addr, size_t size)
+{
+	if (xc->xc_stack_start <= addr && addr + size < xc->xc_stack_end) {
+		memcpy(dest, &xc->xc_stack[addr - xc->xc_stack_start], size);
+		return 0;
+	}
+
+	if (xc->xc_mem_ref != NULL)
+		return xc->xc_mem_ref(xc, dest, addr, size);
+
+	return -XBT_UNSUPP;
+}
+
+static inline int xf_mem_ref(struct xbt_frame *xf,
+			     void *dest, unsigned long addr, size_t size)
+{
+	return xc_mem_ref(xf->xf_context, dest, addr, size);
+}
+
 /* TODO Convert this to dest, addr, size. */
 static inline int xf_frame_ref(struct xbt_frame *xf,
-			       unsigned long *v,
-			       long offset)
+			       unsigned long *v, long offset)
 {
 	unsigned long addr = xf->xf_frame_end + offset;
-	unsigned long stack_offset;
 
 	xbt_trace("offset %ld, addr %lx", offset, addr);
 
 	if (xf->xf_frame_ref != NULL)
 		return xf->xf_frame_ref(xf, v, offset);
 
-	if (!(xf->xf_stack_start <= addr && addr < xf->xf_stack_end)) {
-		/* ... */
-		return -XBT_BAD_FRAME;
-	}
-
-	stack_offset = addr - xf->xf_stack_start;
-
-	*v = *(unsigned long *)
-		(((char *)xf->xf_stack_base) + stack_offset);
-
-	xbt_trace("*v %lx", *v);
-
-	return 0;
-}
-
-static inline int xf_mem_ref(struct xbt_frame *xf,
-			     void *dest, unsigned long addr,
-			     size_t size)
-{
-	if (xf->xf_mem_ref != NULL)
-		return xf->xf_mem_ref(xf, dest, addr, size);
-
-	/* TODO Try converting to stack reference. */
-
-	return -XBT_UNSUPP;
+	return xf_mem_ref(xf, v, addr, sizeof(*v));
 }
 
 void xbt_frame_print(FILE *file, struct xbt_frame *xf);
