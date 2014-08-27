@@ -2021,6 +2021,7 @@ static void xbt_frame_restore_regs(struct xbt_frame *xp)
 	unsigned long start;
 	unsigned char prolog[64];
 	long rsp_off;
+	unsigned int ri;
 	int i;
 
 	xc = xf_child(xp);
@@ -2046,10 +2047,22 @@ static void xbt_frame_restore_regs(struct xbt_frame *xp)
 
 	while (i + 8 < sizeof(prolog)) {
 		long off = LONG_MIN;
-		unsigned int ri;
-		unsigned char o1, o2, o3;
+		unsigned char o0, o1, o2, o3;
 
-		switch (prolog[i++]) {
+		o0 = prolog[i + 0];
+		o1 = prolog[i + 1];
+		o2 = prolog[i + 2];
+		o3 = prolog[i + 3];
+
+#if 0
+		xbt_print("xbt_frame_restore_regs xp = %s, xc = %s, start = %lx, %d "
+			  "%02hhx %02hhx %02hhx %02hhx\n",
+			  xp->xf_func_name, xc->xf_func_name, start, i, o0, o1, o2, o3);
+#endif
+
+		i++;
+
+		switch (o0) {
 		case 0x41: /* push %r12-%r15 */
 			o1 = prolog[i++];
 			if (!(0x54 <= o1 && o1 < 0x58))
@@ -2125,7 +2138,7 @@ static void xbt_frame_restore_regs(struct xbt_frame *xp)
 			ri = XBT_RBX;
 			break;
 		default:
-			return;
+			goto out;
 		}
 
 		if (off == LONG_MIN) {
@@ -2139,6 +2152,23 @@ static void xbt_frame_restore_regs(struct xbt_frame *xp)
 			return;
 
 		xp->xf_reg_mask |= (1UL << ri);
+	}
+out:
+	/* Restore remaining callee save registers. */
+
+	ri = XBT_RBX;
+	if ((xc->xf_reg_mask & (1UL << ri)) &&
+	    !(xp->xf_reg_mask & (1UL << ri))) {
+		xp->xf_reg[ri] = xc->xf_reg[ri];
+		xp->xf_reg_mask |= (1UL << ri);
+	}
+
+	for (ri = XBT_R12; ri <= XBT_R15; ri ++) {
+		if ((xc->xf_reg_mask & (1UL << ri)) &&
+		    !(xp->xf_reg_mask & (1UL << ri))) {
+			xp->xf_reg[ri] = xc->xf_reg[ri];
+			xp->xf_reg_mask |= (1UL << ri);
+		}
 	}
 }
 
