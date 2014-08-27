@@ -129,7 +129,7 @@ int xbt_dwarf_eval(struct xbt_frame *xf,
 #endif
 
 #define FBREG_REF(off)							\
-	((off) + xf->xf_frame_end)
+	((off) + xf->xf_frame_end + 8)
 
 #define BREG_REF(reg, off)						\
 	({								\
