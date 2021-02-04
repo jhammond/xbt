@@ -194,7 +194,7 @@ static int xbt_dwfl_module_cb(Dwfl_Module *dwflmod,
 	Dwarf_Addr rel_pc = 0;
 	bool dwarf_pc_is_absolute;
 
-	int rc = -1;
+	int rc = DWARF_CB_ABORT;
 
 	/* Kernel debuginfo has absolute high/low PCs. */
 	dwarf_pc_is_absolute = (xf->xf_mod == NULL);
@@ -220,7 +220,7 @@ next_cu:
 			    &abbroffset, &addrsize, &offsize,
 			    NULL, NULL) != 0) {
 		/* ... */
-		rc = 0;
+		rc = DWARF_CB_OK;
 		goto out;
 	}
 
@@ -369,7 +369,7 @@ out:
 	free(dies);
 	xbt_trace("OUT\n");
 
-	return DWARF_CB_OK;
+	return rc;
 }
 
 /*
