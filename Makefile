@@ -1,6 +1,6 @@
 
 CPPFLAGS = -D_GNU_SOURCE -DX86_64
-CFLAGS = -Wall -fPIC -g
+CFLAGS = -Wall -Werror -fPIC -g
 
 all: xbt.so xbt_dwfl.so
 
