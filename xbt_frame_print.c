@@ -379,7 +379,7 @@ out:
  * TODO Handle build-ids.
  * TODO Interpret MODULE_PATH as a colon separated list.
  */
- /* mod_name NULL or foo, env_name MODULE_PATH or CRASH_MODULE_PATH */
+ /* mod_name NULL or foo, env_name XBT_MODULE_PATH or CRASH_MODULE_PATH */
 static char *xbt_debuginfo_path(const char *mod_name, const char *env_name)
 {
 	const char *search_list_env = getenv(env_name);
@@ -448,10 +448,13 @@ void xbt_frame_print(FILE *file, struct xbt_frame *xf)
 
 	path = xf->xf_debuginfo_path;
 	if (path == NULL)
-		path = xbt_debuginfo_path(xf->xf_mod_name, "MODULE_PATH");
+		path = xbt_debuginfo_path(xf->xf_mod_name, "XBT_MODULE_PATH");
 
 	if (path == NULL)
 		path = xbt_debuginfo_path(xf->xf_mod_name, "CRASH_MODULE_PATH");
+
+	if (path == NULL)
+		path = xbt_debuginfo_path(xf->xf_mod_name, "MODULE_PATH");
 
 	if (path == NULL) {
 		xbt_error("cannot find debuginfo for module '%s'",

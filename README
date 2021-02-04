@@ -6,12 +6,12 @@ backtrace. It supports x86_64 kdump images. For information about the
 crash utility see http://people.redhat.com/anderson/
 
 * HOWTO
-	Set MODULE_PATH to a colon separated list of directory
+	Set XBT_MODULE_PATH to a colon separated list of directory
 	hierarchies containing the unstripped kernel modules used in
 	the image.
 
 $ make
-$ export MODULE_PATH=/root/lustre-release:/usr/lib/debug/lib/modules/UNAME
+$ export XBT_MODULE_PATH="$HOME/fs/lustre-release:/usr/lib/debug/lib/modules/$(uname -r)"
 $ crash /usr/lib/debug/lib/modules/.../vmlinux /var/crash/.../vmcore
 crash> extend xbt.so
 crash> xbt
