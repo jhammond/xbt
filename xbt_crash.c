@@ -1454,14 +1454,16 @@ out:
 "    process stack pointer: %lx\n"\
 "       current stack base: %lx\n"
 
-/* xbt_context_init() -- convetr crash bt_info to xbt frame
-   list.  Was x86_64_low_budget_back_trace_cmd(). */
-
-/* TODO error(FATAL, ...) will leak our memory. */
-
-static int xbt_context_init(struct xbt_context *xc,
-			    const struct bt_info *bt_in,
-			    FILE *fp)
+/* xbt_context_init_crash() -- convert crash bt_info to xbt frame
+ * list. This is copied from x86_64_low_budget_back_trace_cmd() which
+ * is why it has the fp parameter.
+ *
+ * TODO error(FATAL, ...) will leak our memory.
+*/
+static int
+xbt_context_init_crash(struct xbt_context *xc,
+		       const struct bt_info *bt_in,
+		       FILE *fp)
 {
 	struct machine_specific *ms = machdep->machspec;
 	struct bt_info bt_local, *bt;
@@ -1486,9 +1488,7 @@ static int xbt_context_init(struct xbt_context *xc,
 	last_process_stack_eframe = 0;
 	rsp = bt->stkptr;
 
-	memset(xc, 0, sizeof(*xc));
 	xc->xc_task = bt->task;
-	INIT_LIST_HEAD(&xc->xc_frame_list);
 	xc->xc_mem_ref = xbt_crash_mem_ref;
 
 	xc->xc_stack_start = GET_STACKBASE(xc->xc_task);
@@ -2001,6 +2001,7 @@ in_exception_stack:
 
 	return 0;
 }
+
 /* END copy from crash-7.0.0/x86_64.c */
 
 /* xbt_frame_restore_regs() -- semibackwards nonportable prolog
@@ -2178,9 +2179,12 @@ static void xbt_frame_fini(struct xbt_frame *xf)
 	list_del_init(&xf->xf_context_link);
 }
 
-static void xbt_context_fini(struct xbt_context *xc)
+static void xbt_context_free(struct xbt_context *xc)
 {
 	struct xbt_frame *xf;
+
+	if (xc == NULL)
+		return;
 
 	free(xc->xc_stack);
 	xc->xc_stack = NULL;
@@ -2191,6 +2195,21 @@ static void xbt_context_fini(struct xbt_context *xc)
 		xbt_frame_fini(xf);
 		free(xf);
 	}
+
+	free(xc);
+}
+
+static struct xbt_context *xbt_context_alloc(void)
+{
+	struct xbt_context *xc;
+
+	xc = calloc(1, sizeof(*xc));
+	if (xc == NULL)
+		return NULL;
+
+	INIT_LIST_HEAD(&xc->xc_frame_list);
+
+	return xc;
 }
 
 /* xbt_func() -- crash command callback. */
@@ -2207,14 +2226,9 @@ static void xbt_func(void)
 	}, *bt = &bt_info;
 	ulong rsp;
 	char *rip_sym;
+	int rc;
 
 	struct xbt_context *xc = NULL;
-
-	xc = malloc(sizeof(*xc));
-	if (xc == NULL) {
-		xbt_error("cannot allocate XBT context: %s", strerror(errno));
-		goto out;
-	}
 
 	/*
 	 * TODO Add option to select a specific frame.
@@ -2234,6 +2248,12 @@ static void xbt_func(void)
 				  "  -d, --debug   enable trace\n");
 			goto out;
 		}
+	}
+
+	xc = xbt_context_alloc();
+	if (xc == NULL) {
+		xbt_error("cannot allocate XBT context: %s", strerror(errno));
+		goto out;
 	}
 
 	xbt_trace("stack start %#016lx, end %#016lx", bt->stackbase, bt->stacktop);
@@ -2256,7 +2276,11 @@ static void xbt_func(void)
 	rip_sym = closest_symbol(bt->instptr);
 	xbt_trace("rip_sym %s", rip_sym);
 
-	xbt_context_init(xc, bt, pc->nullfp);
+	rc = xbt_context_init_crash(xc, bt, pc->nullfp);
+	if (rc < 0) {
+		xbt_error("cannot create XBT context\n");
+		goto out;
+	}
 
 	xbt_print("xc_stack_start %#lx, xc_stack_end %#lx\n",
 		  xc->xc_stack_start, xc->xc_stack_end);
@@ -2304,10 +2328,7 @@ static void xbt_func(void)
 		xbt_print("\n");
 	}
 out:
-	if (xc != NULL) {
-		xbt_context_fini(xc);
-		free(xc);
-	}
+	xbt_context_free(xc);
 
 	xbt_debug = 0;
 }
